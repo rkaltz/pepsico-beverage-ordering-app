@@ -104,6 +104,7 @@ function loadPrototype() {
     .replace("const reorderPointOverrides =", "var reorderPointOverrides =")
     .replace("const storeCatalogOverrides =", "var storeCatalogOverrides =")
     .replace("const orderItemOverrides =", "var orderItemOverrides =")
+    .replace("const visitTracking =", "var visitTracking =")
     .replace("const orderSearchInput =", "var orderSearchInput =")
     .replace("const catalogSearchInput =", "var catalogSearchInput =")
     .replace("const scanInput =", "var scanInput =")
@@ -298,6 +299,23 @@ function testStoreSwitchClearsFilters(context) {
   assert(context.scanInput.value === "", "Store switch should clear scan input");
 }
 
+function testVisitTracking(context) {
+  const walmart = context.stores[0];
+  const kroger = context.stores[1];
+  context.startVisit(walmart);
+  assert(context.visitRecord(walmart).status === "in-progress", "Start Visit should mark selected store in progress");
+  assert(context.visitRecord(kroger).status === "not-started", "Start Visit should not leak into next store");
+  context.finishVisit(walmart);
+  assert(context.visitRecord(walmart).status === "complete", "Finish Visit should mark selected store complete");
+  assert(Boolean(context.visitRecord(walmart).startedAt), "Visit should keep a start timestamp");
+  assert(Boolean(context.visitRecord(walmart).finishedAt), "Visit should keep a finish timestamp");
+  assert(context.visitStatusLabel(walmart) === "Complete", "Complete visit label should render correctly");
+  assert(context.visitStatusLabel(kroger) === "Not started", "Unstarted visit label should render correctly");
+  context.startVisit(walmart);
+  assert(context.visitRecord(walmart).status === "in-progress", "Restart Visit should put the store back in progress");
+  assert(context.visitRecord(walmart).finishedAt === "", "Restart Visit should clear the previous finish timestamp");
+}
+
 function run() {
   const context = loadPrototype();
   testSearch(context);
@@ -308,6 +326,7 @@ function run() {
   testSmartOrder(context);
   testCatalogIsolation(context);
   testStoreSwitchClearsFilters(context);
+  testVisitTracking(context);
   console.log("QA regression baseline passed");
 }
 

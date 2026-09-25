@@ -461,6 +461,7 @@ const orderItemOverrides = JSON.parse(localStorage.getItem("orderItemOverrides")
 const displayConfirmations = JSON.parse(localStorage.getItem("displayConfirmations") || "{}");
 const promoOrderOverrides = JSON.parse(localStorage.getItem("promoOrderOverrides") || "{}");
 const dateCheckStatuses = JSON.parse(localStorage.getItem("dateCheckStatuses") || "{}");
+const visitTracking = JSON.parse(localStorage.getItem("visitTracking") || "{}");
 
 const routeSummary = document.querySelector("#routeSummary");
 const weatherSummary = document.querySelector("#weatherSummary");
@@ -476,6 +477,10 @@ const riskPill = document.querySelector("#riskPill");
 const nextDelivery = document.querySelector("#nextDelivery");
 const forecast = document.querySelector("#forecast");
 const caseTotal = document.querySelector("#caseTotal");
+const visitStatusText = document.querySelector("#visitStatusText");
+const visitTimestampText = document.querySelector("#visitTimestampText");
+const startVisitButton = document.querySelector("#startVisitButton");
+const finishVisitButton = document.querySelector("#finishVisitButton");
 const smartOrderSummary = document.querySelector("#smartOrderSummary");
 const reviewSuggestedOrderButton = document.querySelector("#reviewSuggestedOrderButton");
 const orderList = document.querySelector("#orderList");
@@ -811,12 +816,76 @@ function routeMinutesSaved() {
   return stores.reduce((sum, store) => sum + Number(store.timeSaved.split(" ")[0]), 0);
 }
 
+function visitRecord(store) {
+  return visitTracking[store.id] || { status: "not-started", startedAt: "", finishedAt: "" };
+}
+
+function saveVisitTracking() {
+  localStorage.setItem("visitTracking", JSON.stringify(visitTracking));
+}
+
+function formatVisitTime(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat([], {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function visitStatusLabel(store) {
+  const record = visitRecord(store);
+  if (record.status === "complete") return "Complete";
+  if (record.status === "in-progress") return "In store";
+  return "Not started";
+}
+
+function visitStatusClass(store) {
+  const record = visitRecord(store);
+  if (record.status === "complete") return "complete";
+  if (record.status === "in-progress") return "active";
+  return "pending";
+}
+
+function visitTimestampLabel(store) {
+  const record = visitRecord(store);
+  if (record.status === "complete") {
+    return `Started ${formatVisitTime(record.startedAt)} / Finished ${formatVisitTime(record.finishedAt)}`;
+  }
+  if (record.status === "in-progress") {
+    return `Started ${formatVisitTime(record.startedAt)} / tracking visit`;
+  }
+  return "Start when you walk in.";
+}
+
+function startVisit(store) {
+  const record = visitRecord(store);
+  visitTracking[store.id] = {
+    status: "in-progress",
+    startedAt: record.status === "in-progress" && record.startedAt ? record.startedAt : new Date().toISOString(),
+    finishedAt: ""
+  };
+  saveVisitTracking();
+  render();
+}
+
+function finishVisit(store) {
+  const record = visitRecord(store);
+  if (record.status !== "in-progress") return;
+  visitTracking[store.id] = {
+    status: "complete",
+    startedAt: record.startedAt || new Date().toISOString(),
+    finishedAt: new Date().toISOString()
+  };
+  saveVisitTracking();
+  render();
+}
+
 function renderRouteSummary() {
   const highRisk = stores.filter((store) => store.risk === "High").length;
+  const completeVisits = stores.filter((store) => visitRecord(store).status === "complete").length;
   routeSummary.textContent = `${stores.length} stops / ${highRisk} high risk`;
   weatherSummary.textContent = "Heat lift +18%";
-  const minutes = routeMinutesSaved();
-  savedSummary.textContent = `${Math.floor(minutes / 60)}h ${minutes % 60}m est.`;
+  savedSummary.textContent = `${completeVisits}/${stores.length} visits done`;
 }
 
 function setActiveStore(index) {
@@ -850,6 +919,7 @@ function renderRoute() {
           <span class="risk-dot ${riskClass(store.risk)}"></span>
           <span>
             <strong>${store.stop}. ${store.eta} / ${store.name}</strong>
+            <i class="visit-pill ${visitStatusClass(store)}">${visitStatusLabel(store)}</i>
             <small>${store.account} / ${store.visitType} / ${store.riskScore} risk / ${store.timeSaved} saved</small>
             <em>${store.dataMode} / ${store.confidence}</em>
             <em>${store.routeNote}</em>
@@ -885,6 +955,13 @@ function renderBrief(store) {
   nextDelivery.textContent = store.nextDelivery;
   forecast.textContent = store.forecast;
   caseTotal.textContent = `${orderTotal(store)} cases`;
+  const visit = visitRecord(store);
+  visitStatusText.textContent = visitStatusLabel(store);
+  visitStatusText.className = `visit-status ${visitStatusClass(store)}`;
+  visitTimestampText.textContent = visitTimestampLabel(store);
+  startVisitButton.textContent = visit.status === "complete" ? "Restart Visit" : "Start Visit";
+  startVisitButton.disabled = visit.status === "in-progress";
+  finishVisitButton.disabled = visit.status !== "in-progress";
   smartOrderSummary.innerHTML = `
     <div class="smart-order-total">
       <span>Suggested order</span>
@@ -2204,12 +2281,26 @@ if (reviewSuggestedOrderButton) {
   });
 }
 
+if (startVisitButton) {
+  startVisitButton.addEventListener("click", () => {
+    startVisit(stores[activeStoreIndex]);
+  });
+}
+
+if (finishVisitButton) {
+  finishVisitButton.addEventListener("click", () => {
+    finishVisit(stores[activeStoreIndex]);
+  });
+}
+
 document.querySelector("#resetButton").addEventListener("click", () => {
   stores.forEach((store) => {
     store.order.forEach((item) => {
       item.approved = false;
     });
   });
+  Object.keys(visitTracking).forEach((key) => delete visitTracking[key]);
+  saveVisitTracking();
   setActiveStore(0);
 });
 

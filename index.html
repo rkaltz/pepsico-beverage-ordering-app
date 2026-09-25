@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Beverage Order Co-Pilot</title>
-    <link rel="stylesheet" href="styles.css?v=20260925-modern-ordering">
+    <link rel="stylesheet" href="styles.css?v=20260925-visit-tracking">
   </head>
   <body>
     <div class="app-shell">
@@ -82,6 +82,18 @@
             <div>
               <span class="label">Order</span>
               <strong id="caseTotal">57</strong>
+            </div>
+          </div>
+
+          <div class="visit-tracker" aria-label="Store visit tracking">
+            <div>
+              <span>Visit status</span>
+              <strong id="visitStatusText">Not started</strong>
+              <small id="visitTimestampText">Start when you walk in.</small>
+            </div>
+            <div class="visit-actions">
+              <button class="primary-button compact-button" id="startVisitButton" type="button">Start Visit</button>
+              <button class="secondary-button compact-button" id="finishVisitButton" type="button">Finish Visit</button>
             </div>
           </div>
 
@@ -244,6 +256,6 @@
     </div>
 
     <script src="product-catalog.js?v=20260923-camera-scan"></script>
-    <script src="app.js?v=20260925-modern-ordering"></script>
+    <script src="app.js?v=20260925-visit-tracking"></script>
   </body>
 </html>
