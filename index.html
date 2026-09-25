@@ -4,16 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Beverage Order Co-Pilot</title>
-    <link rel="stylesheet" href="styles.css?v=20260923-zbar-scanner">
+    <link rel="stylesheet" href="styles.css?v=20260925-modern-ordering">
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">PepsiCo Beverages / Zebra route</p>
-          <h1>Zebra Beverage Co-Pilot</h1>
+          <p class="eyebrow">Beverage ordering route</p>
+          <h1>Work the order</h1>
+          <span class="topbar-subtitle">Scan, review, and keep shelves full.</span>
         </div>
         <div class="topbar-actions">
+          <div class="pepsico-mark" aria-label="PepsiCo">PEPSICO</div>
           <button class="mode-button" id="demoModeButton" type="button" aria-pressed="false">Zebra</button>
           <button class="icon-button" id="resetButton" aria-label="Reset demo" title="Reset demo">
             <span aria-hidden="true">R</span>
@@ -242,6 +244,6 @@
     </div>
 
     <script src="product-catalog.js?v=20260923-camera-scan"></script>
-    <script src="app.js?v=20260923-zbar-scanner"></script>
+    <script src="app.js?v=20260925-modern-ordering"></script>
   </body>
 </html>
