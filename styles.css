@@ -931,7 +931,7 @@ body[data-active-view="scan-view"] .product-image img {
 .visit-actions {
   display: grid;
   gap: 7px;
-  width: 118px;
+  width: 122px;
 }
 
 .visit-actions .compact-button {
@@ -941,6 +941,10 @@ body[data-active-view="scan-view"] .product-image img {
 
 .visit-status.pending {
   color: var(--muted);
+}
+
+.visit-status.locked {
+  color: var(--amber);
 }
 
 .visit-status.active {
@@ -968,6 +972,11 @@ body[data-active-view="scan-view"] .product-image img {
   color: var(--muted);
 }
 
+.visit-pill.locked {
+  background: #fff4df;
+  color: var(--amber);
+}
+
 .visit-pill.active {
   background: #e6f1ff;
   color: var(--blue-dark);
@@ -976,6 +985,29 @@ body[data-active-view="scan-view"] .product-image img {
 .visit-pill.complete {
   background: #dcf5ec;
   color: var(--green);
+}
+
+.geofence-status {
+  border-left: 3px solid #c7d2df;
+  padding-left: 8px;
+}
+
+.geofence-status.inside {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.geofence-status.outside,
+.geofence-status.denied,
+.geofence-status.unavailable,
+.geofence-status.blocked {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.geofence-status.checking {
+  border-color: var(--blue);
+  color: var(--blue-dark);
 }
 
 .insight-band {

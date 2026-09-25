@@ -105,6 +105,7 @@ function loadPrototype() {
     .replace("const storeCatalogOverrides =", "var storeCatalogOverrides =")
     .replace("const orderItemOverrides =", "var orderItemOverrides =")
     .replace("const visitTracking =", "var visitTracking =")
+    .replace("const geofenceChecks =", "var geofenceChecks =")
     .replace("const orderSearchInput =", "var orderSearchInput =")
     .replace("const catalogSearchInput =", "var catalogSearchInput =")
     .replace("const scanInput =", "var scanInput =")
@@ -302,6 +303,13 @@ function testStoreSwitchClearsFilters(context) {
 function testVisitTracking(context) {
   const walmart = context.stores[0];
   const kroger = context.stores[1];
+  assert(context.startVisit(walmart) === false, "Start Visit should be blocked before geofence approval");
+  assert(context.geofenceRecord(walmart).status === "blocked", "Blocked punch-in should update geofence status");
+  context.geofenceChecks[walmart.id] = {
+    status: "inside",
+    checkedAt: new Date().toISOString(),
+    distanceFeet: 42
+  };
   context.startVisit(walmart);
   assert(context.visitRecord(walmart).status === "in-progress", "Start Visit should mark selected store in progress");
   assert(context.visitRecord(kroger).status === "not-started", "Start Visit should not leak into next store");

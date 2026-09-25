@@ -5,6 +5,7 @@ const stores = [
     eta: "6:05 AM",
     name: "Walmart Supercenter - Grand Blanc",
     address: "Large format / high-volume",
+    geofence: { lat: 42.9274, lng: -83.6297, radiusFeet: 750 },
     account: "Walmart",
     visitType: "Zebra order + displays",
     dataMode: "Demo retailer inventory signal",
@@ -57,6 +58,7 @@ const stores = [
     eta: "7:15 AM",
     name: "Kroger #428 - Grand Blanc",
     address: "Grocery / DSD heavy",
+    geofence: { lat: 42.9143, lng: -83.6291, radiusFeet: 650 },
     account: "Kroger",
     visitType: "Zebra order + cooler check",
     dataMode: "Demo supplier activity feed",
@@ -104,6 +106,7 @@ const stores = [
     eta: "8:25 AM",
     name: "Meijer - Hill Rd",
     address: "Supercenter / weekly ad",
+    geofence: { lat: 42.9459, lng: -83.7207, radiusFeet: 800 },
     account: "Meijer",
     visitType: "Zebra ad support",
     dataMode: "Demo VendorNet-style data",
@@ -148,6 +151,7 @@ const stores = [
     eta: "9:35 AM",
     name: "Busch's Fresh Food Market - Brighton",
     address: "Independent / premium grocery",
+    geofence: { lat: 42.5302, lng: -83.7805, radiusFeet: 600 },
     account: "Busch's",
     visitType: "Zebra-assisted manual order",
     dataMode: "Demo order history + rep check",
@@ -190,6 +194,7 @@ const stores = [
     eta: "10:30 AM",
     name: "Bueche's Food World - Ortonville",
     address: "Independent / two-store chain",
+    geofence: { lat: 42.8526, lng: -83.4430, radiusFeet: 600 },
     account: "Bueche's",
     visitType: "Relationship stop",
     dataMode: "Demo rep notes + history",
@@ -232,6 +237,7 @@ const stores = [
     eta: "11:20 AM",
     name: "Dollar General - Davison Rd",
     address: "Small format / high turns",
+    geofence: { lat: 43.0334, lng: -83.5206, radiusFeet: 550 },
     account: "Dollar General",
     visitType: "Quick Zebra order",
     dataMode: "Demo sales activity, limited on-hand",
@@ -275,6 +281,7 @@ const stores = [
     eta: "12:10 PM",
     name: "CVS - Fenton Rd",
     address: "Drug / cooler-heavy",
+    geofence: { lat: 42.9892, lng: -83.6909, radiusFeet: 550 },
     account: "CVS",
     visitType: "Zebra cooler order",
     dataMode: "Demo EDI/portal signals",
@@ -315,6 +322,7 @@ const stores = [
     eta: "1:05 PM",
     name: "Kroger #219 - Burton",
     address: "Grocery / finish stop",
+    geofence: { lat: 43.0005, lng: -83.6160, radiusFeet: 650 },
     account: "Kroger",
     visitType: "Light Zebra order",
     dataMode: "Demo supplier activity feed",
@@ -462,6 +470,7 @@ const displayConfirmations = JSON.parse(localStorage.getItem("displayConfirmatio
 const promoOrderOverrides = JSON.parse(localStorage.getItem("promoOrderOverrides") || "{}");
 const dateCheckStatuses = JSON.parse(localStorage.getItem("dateCheckStatuses") || "{}");
 const visitTracking = JSON.parse(localStorage.getItem("visitTracking") || "{}");
+const geofenceChecks = JSON.parse(localStorage.getItem("geofenceChecks") || "{}");
 
 const routeSummary = document.querySelector("#routeSummary");
 const weatherSummary = document.querySelector("#weatherSummary");
@@ -479,6 +488,8 @@ const forecast = document.querySelector("#forecast");
 const caseTotal = document.querySelector("#caseTotal");
 const visitStatusText = document.querySelector("#visitStatusText");
 const visitTimestampText = document.querySelector("#visitTimestampText");
+const geofenceStatusText = document.querySelector("#geofenceStatusText");
+const checkGeofenceButton = document.querySelector("#checkGeofenceButton");
 const startVisitButton = document.querySelector("#startVisitButton");
 const finishVisitButton = document.querySelector("#finishVisitButton");
 const smartOrderSummary = document.querySelector("#smartOrderSummary");
@@ -824,6 +835,102 @@ function saveVisitTracking() {
   localStorage.setItem("visitTracking", JSON.stringify(visitTracking));
 }
 
+function geofenceRecord(store) {
+  return geofenceChecks[store.id] || { status: "unchecked", checkedAt: "", distanceFeet: null };
+}
+
+function saveGeofenceChecks() {
+  localStorage.setItem("geofenceChecks", JSON.stringify(geofenceChecks));
+}
+
+function distanceFeetBetween(origin, destination) {
+  const earthRadiusFeet = 20902231;
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const lat1 = toRadians(origin.lat);
+  const lat2 = toRadians(destination.lat);
+  const deltaLat = toRadians(destination.lat - origin.lat);
+  const deltaLng = toRadians(destination.lng - origin.lng);
+  const a = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return Math.round(earthRadiusFeet * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+function formatDistanceFeet(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value < 1000) return `${Math.round(value)} ft`;
+  return `${(value / 5280).toFixed(1)} mi`;
+}
+
+function canPunchIn(store) {
+  return geofenceRecord(store).status === "inside";
+}
+
+function geofenceStatusClass(store) {
+  return geofenceRecord(store).status;
+}
+
+function geofenceStatusLabel(store) {
+  const record = geofenceRecord(store);
+  const radius = store.geofence?.radiusFeet || 0;
+  if (record.status === "inside") {
+    return `Inside store geofence / ${formatDistanceFeet(record.distanceFeet)} away`;
+  }
+  if (record.status === "outside") {
+    return `Outside geofence / ${formatDistanceFeet(record.distanceFeet)} away / ${radius} ft allowed`;
+  }
+  if (record.status === "denied") return "Location permission denied. Start Visit locked.";
+  if (record.status === "unavailable") return "GPS unavailable. Start Visit locked.";
+  if (record.status === "checking") return "Checking GPS location...";
+  if (record.status === "blocked") return "Start Visit blocked until GPS confirms this store.";
+  return "GPS check required before punch-in.";
+}
+
+function setGeofenceStatus(store, values) {
+  geofenceChecks[store.id] = {
+    ...geofenceRecord(store),
+    ...values,
+    checkedAt: values.checkedAt || new Date().toISOString()
+  };
+  saveGeofenceChecks();
+}
+
+function checkStoreGeofence(store) {
+  if (!store.geofence) {
+    setGeofenceStatus(store, { status: "unavailable", distanceFeet: null });
+    render();
+    return;
+  }
+  if (!navigator.geolocation) {
+    setGeofenceStatus(store, { status: "unavailable", distanceFeet: null });
+    render();
+    return;
+  }
+  setGeofenceStatus(store, { status: "checking", distanceFeet: null });
+  render();
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const current = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude
+      };
+      const distanceFeet = distanceFeetBetween(current, store.geofence);
+      setGeofenceStatus(store, {
+        status: distanceFeet <= store.geofence.radiusFeet ? "inside" : "outside",
+        distanceFeet
+      });
+      render();
+    },
+    (error) => {
+      setGeofenceStatus(store, {
+        status: error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
+        distanceFeet: null
+      });
+      render();
+    },
+    { enableHighAccuracy: true, maximumAge: 30000, timeout: 12000 }
+  );
+}
+
 function formatVisitTime(value) {
   if (!value) return "";
   return new Intl.DateTimeFormat([], {
@@ -843,6 +950,7 @@ function visitStatusClass(store) {
   const record = visitRecord(store);
   if (record.status === "complete") return "complete";
   if (record.status === "in-progress") return "active";
+  if (!canPunchIn(store)) return "locked";
   return "pending";
 }
 
@@ -858,6 +966,11 @@ function visitTimestampLabel(store) {
 }
 
 function startVisit(store) {
+  if (!canPunchIn(store)) {
+    setGeofenceStatus(store, { status: "blocked", distanceFeet: geofenceRecord(store).distanceFeet });
+    render();
+    return false;
+  }
   const record = visitRecord(store);
   visitTracking[store.id] = {
     status: "in-progress",
@@ -866,6 +979,7 @@ function startVisit(store) {
   };
   saveVisitTracking();
   render();
+  return true;
 }
 
 function finishVisit(store) {
@@ -959,8 +1073,12 @@ function renderBrief(store) {
   visitStatusText.textContent = visitStatusLabel(store);
   visitStatusText.className = `visit-status ${visitStatusClass(store)}`;
   visitTimestampText.textContent = visitTimestampLabel(store);
+  geofenceStatusText.textContent = geofenceStatusLabel(store);
+  geofenceStatusText.className = `geofence-status ${geofenceStatusClass(store)}`;
+  checkGeofenceButton.disabled = geofenceRecord(store).status === "checking" || visit.status === "in-progress";
+  checkGeofenceButton.textContent = geofenceRecord(store).status === "inside" ? "GPS OK" : "Check GPS";
   startVisitButton.textContent = visit.status === "complete" ? "Restart Visit" : "Start Visit";
-  startVisitButton.disabled = visit.status === "in-progress";
+  startVisitButton.disabled = visit.status === "in-progress" || !canPunchIn(store);
   finishVisitButton.disabled = visit.status !== "in-progress";
   smartOrderSummary.innerHTML = `
     <div class="smart-order-total">
@@ -2281,6 +2399,12 @@ if (reviewSuggestedOrderButton) {
   });
 }
 
+if (checkGeofenceButton) {
+  checkGeofenceButton.addEventListener("click", () => {
+    checkStoreGeofence(stores[activeStoreIndex]);
+  });
+}
+
 if (startVisitButton) {
   startVisitButton.addEventListener("click", () => {
     startVisit(stores[activeStoreIndex]);
@@ -2301,6 +2425,8 @@ document.querySelector("#resetButton").addEventListener("click", () => {
   });
   Object.keys(visitTracking).forEach((key) => delete visitTracking[key]);
   saveVisitTracking();
+  Object.keys(geofenceChecks).forEach((key) => delete geofenceChecks[key]);
+  saveGeofenceChecks();
   setActiveStore(0);
 });
 
