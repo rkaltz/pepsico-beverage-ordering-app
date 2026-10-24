@@ -98,6 +98,7 @@ function loadPrototype(savedState = {}, navigatorOverrides = {}) {
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync("product-catalog.js", "utf8"), context);
+  vm.runInContext(fs.readFileSync("demo-catalog-cards.js", "utf8"), context);
   const appCode = fs
     .readFileSync("app.js", "utf8")
     .replace("const stores = [", "var stores = [")
@@ -416,7 +417,28 @@ function run() {
   testVisitTracking(context);
   testGeofence();
   testPersistenceAndBadData();
+  testDemoCards();
   console.log("QA regression baseline passed");
+}
+
+function testDemoCards() {
+  const context = loadPrototype();
+  const cards = context.window.DEMO_CATALOG_CARDS;
+  assert(cards.length === 12, "Phone demo must show twelve cards");
+  const store = context.stores[0];
+  const other = context.stores[1];
+  const beforeOrder = JSON.stringify(store.order);
+  const beforeMaster = JSON.stringify(context.window.PRODUCT_CATALOG);
+  context.setDemoCardSelected(store, cards[0].id, true);
+  assert(context.selectedDemoCards(store).includes(cards[0].id), "Demo ADD must select the card");
+  assert(context.selectedDemoCards(other).length === 0, "Demo selection must be store-specific");
+  const reloaded = loadPrototype(context.savedState);
+  assert(reloaded.selectedDemoCards(reloaded.stores[0]).includes(cards[0].id), "Demo selection must survive refresh");
+  reloaded.setDemoCardSelected(reloaded.stores[0], cards[0].id, false);
+  assert(reloaded.selectedDemoCards(reloaded.stores[0]).length === 0, "Demo REMOVE must deselect the card");
+  assert(JSON.stringify(store.order) === beforeOrder, "Demo cards must not change operational order lines");
+  assert(JSON.stringify(context.window.PRODUCT_CATALOG) === beforeMaster, "Demo card labels must not change product master or barcode mappings");
+  assert(!context.findProduct(cards[0].labelSku), "Sample card SKU must not become a scan identity");
 }
 
 if (require.main === module) run();

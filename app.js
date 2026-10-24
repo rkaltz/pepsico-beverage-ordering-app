@@ -555,6 +555,9 @@ const storeCatalogList = document.querySelector("#storeCatalogList");
 const catalogAddSelect = document.querySelector("#catalogAddSelect");
 const addCatalogProductButton = document.querySelector("#addCatalogProductButton");
 const catalogSearchInput = document.querySelector("#catalogSearchInput");
+const demoCatalogCards = window.DEMO_CATALOG_CARDS || [];
+const demoCardSelections = readSavedState("demoCardSelections");
+let catalogPresentation = "demo";
 const demoModeButton = document.querySelector("#demoModeButton");
 const viewMap = {
   ".route-panel": "route-view",
@@ -2312,6 +2315,15 @@ function renderCatalog() {
 
 function renderStoreCatalog(store) {
   if (!storeCatalogList || !storeCatalogCount) return;
+  const isDemo = catalogPresentation === "demo";
+  document.querySelector("#catalogWorking").hidden = isDemo;
+  document.querySelector("#demoCatalogList").hidden = !isDemo;
+  document.querySelector("#demoCatalogNotice").hidden = !isDemo;
+  document.querySelector("#storeCatalogLabel").textContent = isDemo ? "Demo selections for this store" : "Authorized in this store";
+  if (isDemo) {
+    renderDemoCatalogCards(store);
+    return;
+  }
   const products = storeAuthorizedCatalog(store);
   const searchTerm = (catalogSearchInput?.value || "").trim();
   const authorizedSkus = new Set(products.map((product) => product.sku));
@@ -2376,6 +2388,52 @@ function renderStoreCatalog(store) {
       addProductToStoreCatalog(store, button.dataset.addCatalogSku);
       orderBuilt = false;
       render();
+    });
+  });
+}
+
+function selectedDemoCards(store) {
+  const saved = demoCardSelections[store.id];
+  return Array.isArray(saved) ? saved.filter((id) => demoCatalogCards.some((card) => card.id === id)) : [];
+}
+
+function setDemoCardSelected(store, id, selected) {
+  if (!demoCatalogCards.some((card) => card.id === id)) return;
+  const ids = new Set(selectedDemoCards(store));
+  if (selected) ids.add(id);
+  else ids.delete(id);
+  demoCardSelections[store.id] = [...ids];
+  saveState("demoCardSelections", demoCardSelections);
+}
+
+function renderDemoCatalogCards(store) {
+  const list = document.querySelector("#demoCatalogList");
+  const selected = new Set(selectedDemoCards(store));
+  const tokens = normalizeSearchText(catalogSearchInput?.value || "").split(/\s+/).filter(Boolean);
+  const cards = demoCatalogCards.filter((card) => {
+    const text = normalizeSearchText(`${card.name} ${card.package} ${card.labelSku}`);
+    return tokens.every((token) => text.includes(token));
+  });
+  storeCatalogCount.textContent = `${cards.length} demo cards / ${selected.size} selected`;
+  list.innerHTML = cards.map((card) => {
+    const [x, y, width, height] = card.crop;
+    const cover = demoCatalogCards.indexOf(card) < 8
+      ? `<rect x="${x + width - 48}" y="${y + height - 32}" width="43" height="27" fill="white"></rect>` : "";
+    const added = selected.has(card.id);
+    return `<article class="demo-catalog-card${added ? " selected" : ""}" aria-label="${escapeHtml(card.name)}">
+      <svg viewBox="${card.crop.join(" ")}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(`${card.name}, ${card.package}, demo SKU ${card.labelSku}`)}">
+        <image href="assets/products/catalog-demo-sheet.png" width="1024" height="560"></image>${cover}
+      </svg>
+      <div class="demo-card-actions">
+        <button type="button" data-demo-add="${card.id}" aria-label="Add ${escapeHtml(card.name)}" ${added ? "disabled" : ""}>${added ? "ADDED" : "ADD"}</button>
+        <button type="button" class="demo-card-remove" data-demo-remove="${card.id}" aria-label="Remove ${escapeHtml(card.name)}" ${added ? "" : "disabled"}>REMOVE</button>
+      </div>
+    </article>`;
+  }).join("") || `<div class="empty-state">No matching demo cards.</div>`;
+  list.querySelectorAll("[data-demo-add], [data-demo-remove]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setDemoCardSelected(store, button.dataset.demoAdd || button.dataset.demoRemove, Boolean(button.dataset.demoAdd));
+      renderDemoCatalogCards(store);
     });
   });
 }
@@ -2550,6 +2608,17 @@ if (catalogSearchInput) {
   });
 }
 
+document.querySelectorAll("[data-catalog-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    catalogPresentation = button.dataset.catalogMode;
+    document.querySelectorAll("[data-catalog-mode]").forEach((tab) => {
+      tab.setAttribute("aria-selected", String(tab.dataset.catalogMode === catalogPresentation));
+    });
+    catalogSearchInput.value = "";
+    renderStoreCatalog(stores[activeStoreIndex]);
+  });
+});
+
 if (demoModeButton) {
   demoModeButton.addEventListener("click", () => {
     setZebraDemoMode(!document.body.classList.contains("zebra-demo"));
@@ -2616,4 +2685,4 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 });
 
 render();
-setActiveView(".order-panel", false);
+setActiveView(new URLSearchParams(window.location.search).get("view") === "catalog" ? ".catalog-panel" : ".order-panel", false);

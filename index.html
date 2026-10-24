@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Beverage Order Co-Pilot</title>
-    <link rel="stylesheet" href="styles.css?v=20261024-debug">
+    <link rel="stylesheet" href="styles.css?v=20261024-catalogcards">
   </head>
   <body>
     <div class="app-shell">
@@ -189,19 +189,27 @@
             </div>
             <span>Search all SKUs</span>
           </div>
+          <div class="catalog-view-modes" role="tablist" aria-label="Catalog type">
+            <button type="button" role="tab" data-catalog-mode="demo" aria-selected="true">Demo cards</button>
+            <button type="button" role="tab" data-catalog-mode="working" aria-selected="false">Working catalog</button>
+          </div>
           <div class="store-catalog-head">
-            <span>Authorized in this store</span>
+            <span id="storeCatalogLabel">Demo selections for this store</span>
             <b id="storeCatalogCount">0 items</b>
           </div>
           <label class="catalog-search">
             Search store products
             <input id="catalogSearchInput" type="search" autocomplete="off" placeholder="Search brand, SKU, package, category">
           </label>
+          <div id="catalogWorking" hidden>
           <div class="catalog-add-row">
             <select id="catalogAddSelect" aria-label="Add product to this store"></select>
             <button class="secondary-button compact-button" id="addCatalogProductButton">Add</button>
           </div>
           <div id="storeCatalogList" class="store-catalog-list"></div>
+          </div>
+          <div id="demoCatalogList" class="demo-catalog-cards"></div>
+          <p id="demoCatalogNotice" class="demo-notice">Demo artwork and sample labels. Card selections do not generate orders.</p>
         </section>
 
         <section class="section-panel weather-panel app-view route-view order-view" aria-label="Weather impact">
@@ -259,7 +267,8 @@
 
     </div>
 
-    <script src="product-catalog.js?v=20261024-debug"></script>
-    <script src="app.js?v=20261024-debug"></script>
+    <script src="product-catalog.js?v=20261024-catalogcards"></script>
+    <script src="demo-catalog-cards.js?v=20261024-catalogcards"></script>
+    <script src="app.js?v=20261024-catalogcards"></script>
   </body>
 </html>
