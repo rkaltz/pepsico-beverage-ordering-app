@@ -35,6 +35,7 @@ async function main() {
   await dialog.waitFor({ state: 'visible' });
   assert.equal(await dialog.locator('img').count(), 1);
   assert.equal(await dialog.locator('img').evaluate((image) => image.complete && image.naturalWidth > 0), true);
+  assert.equal(await dialog.locator('img').evaluate((image) => image.compareDocumentPosition(document.querySelector('.display-preview-layout')) & Node.DOCUMENT_POSITION_FOLLOWING), 4);
   assert.match(await dialog.innerText(), /Historical retail example only/);
   assert.deepEqual(errors, []);
   console.log('Handheld display preview browser checks passed');

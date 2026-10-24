@@ -1601,9 +1601,9 @@ function renderDisplayPreviewMarkup(details) {
       <button type="button" class="secondary-button compact-button" data-close-display-preview aria-label="Close preview">Close</button>
     </div>
     <p class="display-preview-meta">${escapeHtml(details.store)} · ${escapeHtml(details.area)} · ${escapeHtml(details.window)}</p>
+    ${photo}
     <div class="display-preview-layout" role="img" aria-label="Illustrative six-position layout for ${escapeHtml(details.products)}">${productTiles}</div>
     <p class="display-preview-note">Illustrative demo layout. Not an approved planogram or build instruction.</p>
-    ${photo}
     <div class="display-preview-summary"><strong>${escapeHtml(details.products)}</strong><span>${details.cases} cases planned for display build</span></div>
     <p class="display-preview-note">Confirm the current promotion, placement, and approved display image with the store or PepsiCo before building.</p>`;
 }
