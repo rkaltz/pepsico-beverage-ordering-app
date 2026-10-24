@@ -406,6 +406,7 @@ function testPersistenceAndBadData() {
 
 function run() {
   const context = loadPrototype();
+  testDisplayPreviews(context);
   testSearch(context);
   testInventory(context);
   testOrderingMath(context);
@@ -419,6 +420,25 @@ function run() {
   testPersistenceAndBadData();
   testDemoCards();
   console.log("QA regression baseline passed");
+}
+
+function testDisplayPreviews(context) {
+  const walmart = context.stores.find((store) => store.id === "WM-2558");
+  const kroger = context.stores.find((store) => store.id === "KR-428");
+  const meijer = context.stores.find((store) => store.id === "MJ-64");
+  const gatorade = context.displayPreviewDetails(kroger, "display", 0);
+  assert(gatorade.products === "Gatorade 28oz Glacier Freeze", "Kroger preview must use its own display product");
+  assert(gatorade.photo.src.includes("gatorade-endcap.jpg"), "Gatorade preview should use its historical example photo");
+  assert(context.displayPreviewDetails(walmart, "display", 0).photo === null, "Mixed hydration stack must not show a mismatched product photo");
+  assert(context.displayPreviewDetails(meijer, "display", 1).photo === null, "Cooler singles must not show a twelve-pack photo");
+  assert(context.displayPreviewDetails(meijer, "display", 0).photo === null, "Gatorade twelve-packs must not show a bottle endcap photo");
+  assert(context.displayPreviewDetails(walmart, "promo", 0).photo.src.includes("pepsi-display.jpg"), "Pepsi 12pk promo should show its historical example photo");
+  assert(context.displayPreviewDetails(kroger, "promo", 0).store === kroger.name, "Promo preview must be store-specific");
+  assert(context.displayPreviewDetails(kroger, "display", 99) === null, "Unknown display index must not open a preview");
+  assert(context.displayPreviewDetails(kroger, "unknown", 0) === null, "Unknown preview type must be rejected");
+  const markup = context.renderDisplayPreviewMarkup(gatorade);
+  assert(markup.includes("not this store's approved display"), "Historical photo must be labeled as an example");
+  assert(markup.includes("Not an approved planogram"), "Illustrative layout must be labeled");
 }
 
 function testDemoCards() {

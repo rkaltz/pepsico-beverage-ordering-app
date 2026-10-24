@@ -393,6 +393,19 @@ const displayPlans = {
   ]
 };
 
+const displayExamplePhotos = {
+  gatorade: {
+    src: "assets/displays/gatorade-endcap.jpg",
+    alt: "Historical Gatorade retail endcap with bottled drinks",
+    source: "https://commons.wikimedia.org/wiki/File:Gatorade_(13555818345).jpg"
+  },
+  pepsi: {
+    src: "assets/displays/pepsi-display.jpg",
+    alt: "Historical Pepsi twelve-pack retail stack",
+    source: "https://commons.wikimedia.org/wiki/File:Super_Bowl_2015_Pepsi_Display_(16398090302).jpg"
+  }
+};
+
 const promoRecommendations = {
   "WM-2558": [
     {
@@ -1512,9 +1525,12 @@ function renderDisplays(store) {
                 <small>${display.products}</small>
               </div>
               <b>${display.cases} cs</b>
-              <button class="secondary-button compact-button" type="button" data-display-confirm="${index}">
-                ${confirmed ? "Undo" : "Confirm"}
-              </button>
+              <div class="display-actions">
+                <button class="secondary-button compact-button" type="button" data-display-preview="${index}">View preview</button>
+                <button class="secondary-button compact-button" type="button" data-display-confirm="${index}">
+                  ${confirmed ? "Undo" : "Confirm"}
+                </button>
+              </div>
             </article>
           `;
         })
@@ -1542,6 +1558,63 @@ function renderDisplays(store) {
       renderDisplays(store);
     });
   });
+  displayList.querySelectorAll("[data-display-preview]").forEach((button) => {
+    button.addEventListener("click", () => openDisplayPreview(store, "display", Number(button.dataset.displayPreview)));
+  });
+  displayList.querySelectorAll("[data-promo-preview]").forEach((button) => {
+    button.addEventListener("click", () => openDisplayPreview(store, "promo", Number(button.dataset.promoPreview)));
+  });
+}
+
+function displayPreviewDetails(store, kind, index) {
+  if (!Number.isInteger(index) || index < 0) return null;
+  const item = (kind === "display" ? displayPlans[store.id] : kind === "promo" ? promoRecommendations[store.id] : null)?.[index];
+  if (!item) return null;
+  const products = kind === "display" ? item.products : item.sku;
+  const photoKey = /^Gatorade 28oz\b/i.test(products) && !/[+\/]/.test(products)
+    ? "gatorade"
+    : /^Pepsi 12pk$/i.test(products) ? "pepsi" : null;
+  return {
+    title: kind === "display" ? item.action : item.event,
+    store: store.name,
+    area: kind === "display" ? item.area : "Promotion placement to be confirmed",
+    window: kind === "display" ? item.window : "Promotion window to be confirmed",
+    products,
+    cases: kind === "display" ? item.cases : item.displayBuildCases,
+    photo: photoKey ? displayExamplePhotos[photoKey] : null
+  };
+}
+
+function renderDisplayPreviewMarkup(details) {
+  const productNames = details.products.split(/\s+(?:\+|\/)\s+/).map((name) => name.trim());
+  const productTiles = Array.from({ length: 6 }, (_, index) =>
+    `<span class="display-preview-tile">${escapeHtml(productNames[index % productNames.length])}</span>`
+  ).join("");
+  const photo = details.photo ? `
+    <figure class="display-example-photo">
+      <img src="${details.photo.src}" alt="${escapeHtml(details.photo.alt)}" loading="lazy">
+      <figcaption>Historical retail example only, not this store's approved display. Photo: Mike Mozart, <a href="${details.photo.source}" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a>, <a href="https://creativecommons.org/licenses/by/2.0/" target="_blank" rel="noopener noreferrer">CC BY 2.0</a>.</figcaption>
+    </figure>` : "";
+  return `
+    <div class="display-preview-head">
+      <div><p class="eyebrow">Display preview</p><h2>${escapeHtml(details.title)}</h2></div>
+      <button type="button" class="secondary-button compact-button" data-close-display-preview aria-label="Close preview">Close</button>
+    </div>
+    <p class="display-preview-meta">${escapeHtml(details.store)} · ${escapeHtml(details.area)} · ${escapeHtml(details.window)}</p>
+    <div class="display-preview-layout" role="img" aria-label="Illustrative six-position layout for ${escapeHtml(details.products)}">${productTiles}</div>
+    <p class="display-preview-note">Illustrative demo layout. Not an approved planogram or build instruction.</p>
+    ${photo}
+    <div class="display-preview-summary"><strong>${escapeHtml(details.products)}</strong><span>${details.cases} cases planned for display build</span></div>
+    <p class="display-preview-note">Confirm the current promotion, placement, and approved display image with the store or PepsiCo before building.</p>`;
+}
+
+function openDisplayPreview(store, kind, index) {
+  const details = displayPreviewDetails(store, kind, index);
+  const dialog = document.querySelector("#displayPreviewDialog");
+  if (!details || !dialog) return;
+  dialog.innerHTML = renderDisplayPreviewMarkup(details);
+  dialog.querySelector("[data-close-display-preview]").addEventListener("click", () => dialog.close());
+  dialog.showModal();
 }
 
 function renderPromoRecommendation(store, promo, index) {
@@ -1572,6 +1645,7 @@ function renderPromoRecommendation(store, promo, index) {
           <span>${promo.displayBuildCases} cs to build / ${promo.expectedDisplaySales} cs expected lift</span>
         </div>
       </div>
+      <button class="secondary-button compact-button promo-preview-button" type="button" data-promo-preview="${index}">View display preview</button>
     </article>
   `;
 }
