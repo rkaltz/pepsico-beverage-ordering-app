@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Beverage Order Co-Pilot</title>
-    <link rel="stylesheet" href="styles.css?v=20260925-geofence">
+    <link rel="stylesheet" href="styles.css?v=20261024-debug">
   </head>
   <body>
     <div class="app-shell">
@@ -24,6 +24,8 @@
       </header>
 
       <main>
+        <p class="demo-notice">Demo data / Orders are saved on this device only.</p>
+        <p id="storageStatus" class="demo-notice" role="status" hidden>Storage unavailable. Changes will not survive refresh.</p>
         <section class="route-switcher" aria-label="Route store selector">
           <label>
             Route stop
@@ -45,7 +47,7 @@
             <strong id="weatherSummary">Heat lift +18%</strong>
           </div>
           <div>
-            <span class="label">Time saved</span>
+            <span class="label">Visits completed</span>
             <strong id="savedSummary">3h 20m est.</strong>
           </div>
         </section>
@@ -241,7 +243,7 @@
           <div id="reviewMath" class="review-math"></div>
           <div class="action-row">
             <button class="secondary-button" id="editButton">Edit</button>
-            <button class="primary-button" id="sendButton">Submit Zebra Order</button>
+            <button class="primary-button" id="sendButton">Save Demo Order</button>
           </div>
         </section>
       </main>
@@ -257,7 +259,7 @@
 
     </div>
 
-    <script src="product-catalog.js?v=20260923-camera-scan"></script>
-    <script src="app.js?v=20260925-geofence"></script>
+    <script src="product-catalog.js?v=20261024-debug"></script>
+    <script src="app.js?v=20261024-debug"></script>
   </body>
 </html>

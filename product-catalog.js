@@ -79,16 +79,29 @@ window.PRODUCT_CATALOG = [
   },
   {
     sku: "PEP-PEPSI-20OZ",
-    upcs: ["012000001291", "012000002946"],
+    upcs: ["012000001291"],
     brand: "Pepsi",
     name: "Pepsi 20oz Bottle",
     category: "Cola",
     package: "20oz bottle",
     salesChannel: "Cooler single",
     ownership: "PepsiCo owned",
-    imageUrl: "https://smartlabel.pepsico.info/012000001291-0013-en-US/images/b86c05bf-2a5b-4777-bc98-a58b72101625.jpg",
-    imageStatus: "Official SmartLabel product image URL - verify final SKU art with PepsiCo master data",
-    dataStatus: "SmartLabel UPC plus UPCItemDB seed - verify with PepsiCo master data"
+    imageUrl: "assets/products/pepsi-20oz.jpg",
+    imageStatus: "PepsiCo digital asset 00012000001291_C1N1 - 20oz bottle",
+    dataStatus: "PepsiCo SmartLabel UPC 012000001291 - 20 FL OZ bottle"
+  },
+  {
+    sku: "PEP-PEPSI-1L",
+    upcs: ["012000002946"],
+    brand: "Pepsi",
+    name: "Pepsi 1 Liter Bottle",
+    category: "Cola",
+    package: "1L bottle",
+    salesChannel: "Shelf bottle",
+    ownership: "PepsiCo owned",
+    imageUrl: "assets/products/pepsi-1l.jpg",
+    imageStatus: "PepsiCo SmartLabel product image - 1 liter bottle",
+    dataStatus: "PepsiCo Partners and SmartLabel UPC 012000002946 - 1L bottle"
   },
   {
     sku: "PEP-MTDEW-12PK-12OZ",

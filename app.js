@@ -1,3 +1,4 @@
+// Demo coordinates require account-master verification (geofence.verified) before punch-in.
 const stores = [
   {
     id: "WM-2558",
@@ -451,6 +452,8 @@ const promoRecommendations = {
 
 let activeStoreIndex = 0;
 let orderBuilt = false;
+let cameraSession = 0;
+let geofenceRequest = 0;
 let activeScannedProductSku = "";
 let activeViewTarget = ".order-panel";
 let cameraStream = null;
@@ -463,14 +466,42 @@ let zxingModule = null;
 let zbarLoadPromise = null;
 let cameraEngine = "";
 let cameraDecodedValue = "";
-const reorderPointOverrides = JSON.parse(localStorage.getItem("reorderPointOverrides") || "{}");
-const storeCatalogOverrides = JSON.parse(localStorage.getItem("storeCatalogOverrides") || "{}");
-const orderItemOverrides = JSON.parse(localStorage.getItem("orderItemOverrides") || "{}");
-const displayConfirmations = JSON.parse(localStorage.getItem("displayConfirmations") || "{}");
-const promoOrderOverrides = JSON.parse(localStorage.getItem("promoOrderOverrides") || "{}");
-const dateCheckStatuses = JSON.parse(localStorage.getItem("dateCheckStatuses") || "{}");
-const visitTracking = JSON.parse(localStorage.getItem("visitTracking") || "{}");
-const geofenceChecks = JSON.parse(localStorage.getItem("geofenceChecks") || "{}");
+function readSavedState(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveState(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    const status = document.querySelector("#storageStatus");
+    if (status) status.hidden = false;
+  }
+}
+
+function caseQuantity(value, fallback = 0) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback;
+}
+
+const reorderPointOverrides = readSavedState("reorderPointOverrides");
+const storeCatalogOverrides = readSavedState("storeCatalogOverrides");
+const catalogRemovals = readSavedState("catalogRemovals");
+const orderItemOverrides = readSavedState("orderItemOverrides");
+const displayConfirmations = readSavedState("displayConfirmations");
+const promoOrderOverrides = readSavedState("promoOrderOverrides");
+const dateCheckStatuses = readSavedState("dateCheckStatuses");
+const visitTracking = readSavedState("visitTracking");
+const returnsOverrides = readSavedState("returnsOverrides");
+const reviewSnapshots = readSavedState("reviewSnapshots");
+// GPS checks are intentionally session-only; reload always requires a fresh fix.
+const geofenceChecks = {};
 
 const routeSummary = document.querySelector("#routeSummary");
 const weatherSummary = document.querySelector("#weatherSummary");
@@ -536,7 +567,7 @@ const viewMap = {
 };
 
 function finalCases(item) {
-  return Math.max(0, item.base);
+  return caseQuantity(item.base);
 }
 
 function normalCases(item) {
@@ -545,7 +576,7 @@ function normalCases(item) {
 
 function learnedDemandLift(item) {
   const repeatRunouts = Math.max(0, item.stockoutWeeks || 0);
-  if (repeatRunouts < 2 || storeQoh(item) <= 0) return 0;
+  if (repeatRunouts < 2) return 0;
   const velocityLift = Math.ceil(Math.max(0, item.sold - storeQoh(item)) / 10);
   return Math.min(10, repeatRunouts * 2 + velocityLift);
 }
@@ -585,16 +616,27 @@ function dateCheckKey(store, item) {
 
 function loadOrderItemOverrides() {
   stores.forEach((store) => {
+    if (Array.isArray(returnsOverrides[store.id])) {
+      store.returns = returnsOverrides[store.id].filter((item) => item && typeof item === "object")
+        .map((item) => ({ item: String(item.item || "New return"), note: String(item.note || ""),
+          type: ["OOD", "Breakage", "Sellable"].includes(item.type) ? item.type : "OOD", cases: caseQuantity(item.cases) }));
+    }
     store.order.forEach((item) => {
+      item.normalBase = finalCases(item);
       const override = orderItemOverrides[orderItemOverrideKey(store, item)];
-      if (override) Object.assign(item, override);
+      if (override && typeof override === "object") {
+        for (const field of ["base", "qoh", "warehouseQoh"]) {
+          if (Object.hasOwn(override, field)) item[field] = caseQuantity(override[field], field === "warehouseQoh" ? null : 0);
+        }
+        item.approved = override.approved === true;
+      }
     });
   });
 }
 
 function activeReorderPoint(store, item) {
   const savedOverride = reorderPointOverrides[reorderOverrideKey(store, item)];
-  return savedOverride ?? item.reorderPoint ?? suggestedReorderPoint(item);
+  return caseQuantity(savedOverride ?? item.reorderPoint, suggestedReorderPoint(item));
 }
 
 function hasRepReorderPoint(store, item) {
@@ -602,7 +644,7 @@ function hasRepReorderPoint(store, item) {
 }
 
 function storeQoh(item) {
-  return item.qoh ?? item.onHand ?? 0;
+  return caseQuantity(item.qoh ?? item.onHand);
 }
 
 function autoOrderGap(store, item) {
@@ -614,8 +656,8 @@ function hasWarehouseQoh(item) {
 }
 
 function warehouseQoh(item) {
-  if (typeof item.warehouseQoh === "number") return item.warehouseQoh;
-  if (typeof item.warehouseOnHand === "number") return item.warehouseOnHand;
+  if (Object.hasOwn(item, "warehouseQoh")) return caseQuantity(item.warehouseQoh, null);
+  if (Object.hasOwn(item, "warehouseOnHand")) return caseQuantity(item.warehouseOnHand, null);
   return null;
 }
 
@@ -646,10 +688,11 @@ function itemFamily(item) {
 
 function smartOrder(store) {
   const suggestedTotal = orderTotal(store);
-  const normalTotal = store.order.reduce((sum, item) => sum + normalCases(item), 0);
+  const normalTotal = store.order.reduce((sum, item) => sum + (isRemovedItem(store, item) ? 0 : normalCases(item)), 0);
   const familyMap = new Map();
 
   store.order.forEach((item) => {
+    if (isRemovedItem(store, item)) return;
     const family = itemFamily(item);
     const current = familyMap.get(family) || { family, suggested: 0, normal: 0, sold: 0, qoh: 0 };
     current.suggested += finalCases(item);
@@ -685,7 +728,7 @@ function smartOrder(store) {
 }
 
 function dateCheckItems(store) {
-  return store.order.filter((item) => storeQoh(item) > 0 && (item.noSalesDays || 0) >= 60 && !dateCheckStatuses[dateCheckKey(store, item)]);
+  return store.order.filter((item) => !isRemovedItem(store, item) && storeQoh(item) > 0 && (item.noSalesDays || 0) >= 60 && !dateCheckStatuses[dateCheckKey(store, item)]);
 }
 
 function setZebraDemoMode(enabled, updateUrl = true) {
@@ -769,6 +812,8 @@ function orderItemMatchesSearch(item, searchTerm) {
   const term = normalizeSearchText(searchTerm);
   if (!term) return true;
   const product = productByStoreItem(item);
+  const requestedPackages = packageTokens(term);
+  if (requestedPackages.length && !packageMatches(normalizeSearchText(product?.package || item.sku), requestedPackages)) return false;
   if (product && searchProducts([product], term).length) return true;
   const itemText = normalizeSearchText(
     [item.sku, item.location, orderSection(item), item.category, item.package]
@@ -785,9 +830,9 @@ function orderItemMatchesScannedProduct(item, productSku) {
 }
 
 function saveReorderPointOverride(store, item, value) {
-  reorderPointOverrides[reorderOverrideKey(store, item)] = value;
-  item.reorderPoint = value;
-  localStorage.setItem("reorderPointOverrides", JSON.stringify(reorderPointOverrides));
+  reorderPointOverrides[reorderOverrideKey(store, item)] = caseQuantity(value);
+  item.reorderPoint = caseQuantity(value);
+  saveState("reorderPointOverrides", reorderPointOverrides);
 }
 
 function applyAutoOrderFromPoint(store, item) {
@@ -810,13 +855,18 @@ function syncInitialAutoOrdersFromPoints() {
 
 function saveOrderItemOverride(store, item, values) {
   const key = orderItemOverrideKey(store, item);
+  if (!Object.hasOwn(values, "approved")) values = { ...values, approved: false };
   orderItemOverrides[key] = { ...(orderItemOverrides[key] || {}), ...values };
   Object.assign(item, values);
-  localStorage.setItem("orderItemOverrides", JSON.stringify(orderItemOverrides));
+  saveState("orderItemOverrides", orderItemOverrides);
 }
 
 function orderTotal(store) {
-  return store.order.reduce((sum, item) => sum + finalCases(item), 0);
+  return store.order.reduce((sum, item) => sum + (isRemovedItem(store, item) ? 0 : finalCases(item)), 0);
+}
+
+function isRemovedItem(store, item) {
+  return Array.isArray(catalogRemovals[store.id]) && catalogRemovals[store.id].includes(productByStoreItem(item)?.sku);
 }
 
 function riskClass(risk) {
@@ -828,11 +878,22 @@ function routeMinutesSaved() {
 }
 
 function visitRecord(store) {
-  return visitTracking[store.id] || { status: "not-started", startedAt: "", finishedAt: "" };
+  const today = visitDay();
+  const current = visitTracking[`${today}:${store.id}`];
+  const active = Object.values(visitTracking).find((record) => record?.storeId === store.id && record.status === "in-progress");
+  if (active) return active;
+  if (current) return current;
+  const legacy = visitTracking[store.id];
+  if (legacy?.startedAt && visitDay(new Date(legacy.startedAt)) === today) return legacy;
+  return { status: "not-started", startedAt: "", finishedAt: "" };
+}
+
+function visitDay(date = new Date()) {
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
 }
 
 function saveVisitTracking() {
-  localStorage.setItem("visitTracking", JSON.stringify(visitTracking));
+  saveState("visitTracking", visitTracking);
 }
 
 function geofenceRecord(store) {
@@ -840,7 +901,7 @@ function geofenceRecord(store) {
 }
 
 function saveGeofenceChecks() {
-  localStorage.setItem("geofenceChecks", JSON.stringify(geofenceChecks));
+  // Never persist a punch-in authorization across page loads.
 }
 
 function distanceFeetBetween(origin, destination) {
@@ -852,7 +913,8 @@ function distanceFeetBetween(origin, destination) {
   const deltaLng = toRadians(destination.lng - origin.lng);
   const a = Math.sin(deltaLat / 2) ** 2
     + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
-  return Math.round(earthRadiusFeet * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  const bounded = Math.min(1, Math.max(0, a));
+  return earthRadiusFeet * 2 * Math.atan2(Math.sqrt(bounded), Math.sqrt(1 - bounded));
 }
 
 function formatDistanceFeet(value) {
@@ -862,7 +924,11 @@ function formatDistanceFeet(value) {
 }
 
 function canPunchIn(store) {
-  return geofenceRecord(store).status === "inside";
+  const record = geofenceRecord(store);
+  const age = Date.now() - Date.parse(record.checkedAt);
+  return store.geofence?.verified === true && record.status === "inside" && age >= 0 && age <= 30000
+    && Number.isFinite(record.distanceFeet) && Number.isFinite(record.accuracyFeet)
+    && record.distanceFeet + record.accuracyFeet <= store.geofence.radiusFeet;
 }
 
 function geofenceStatusClass(store) {
@@ -870,9 +936,11 @@ function geofenceStatusClass(store) {
 }
 
 function geofenceStatusLabel(store) {
+  if (store.geofence?.verified !== true) return "Store location needs verification. Punch-in locked.";
   const record = geofenceRecord(store);
   const radius = store.geofence?.radiusFeet || 0;
   if (record.status === "inside") {
+    if (!canPunchIn(store)) return "GPS check expired. Check GPS again.";
     return `Inside store geofence / ${formatDistanceFeet(record.distanceFeet)} away`;
   }
   if (record.status === "outside") {
@@ -881,6 +949,8 @@ function geofenceStatusLabel(store) {
   if (record.status === "denied") return "Location permission denied. Start Visit locked.";
   if (record.status === "unavailable") return "GPS unavailable. Start Visit locked.";
   if (record.status === "checking") return "Checking GPS location...";
+  if (record.status === "inaccurate") return "Location accuracy too low. Move near the entrance and retry.";
+  if (record.status === "timeout") return "GPS timed out. Check GPS again.";
   if (record.status === "blocked") return "Start Visit blocked until GPS confirms this store.";
   return "GPS check required before punch-in.";
 }
@@ -895,7 +965,7 @@ function setGeofenceStatus(store, values) {
 }
 
 function checkStoreGeofence(store) {
-  if (!store.geofence) {
+  if (!store.geofence || store.geofence.verified !== true) {
     setGeofenceStatus(store, { status: "unavailable", distanceFeet: null });
     render();
     return;
@@ -906,33 +976,42 @@ function checkStoreGeofence(store) {
     return;
   }
   setGeofenceStatus(store, { status: "checking", distanceFeet: null });
+  const request = ++geofenceRequest;
   render();
   navigator.geolocation.getCurrentPosition(
     (position) => {
+      if (request !== geofenceRequest) return;
       const current = {
         lat: position.coords.latitude,
         lng: position.coords.longitude
       };
       const distanceFeet = distanceFeetBetween(current, store.geofence);
+      const accuracyFeet = position.coords.accuracy * 3.28084;
+      const age = Date.now() - position.timestamp;
+      const valid = Number.isFinite(distanceFeet) && Number.isFinite(accuracyFeet) && accuracyFeet >= 0 && age >= 0 && age <= 30000;
       setGeofenceStatus(store, {
-        status: distanceFeet <= store.geofence.radiusFeet ? "inside" : "outside",
-        distanceFeet
+        status: !valid ? "unavailable" : distanceFeet > store.geofence.radiusFeet ? "outside"
+          : distanceFeet + accuracyFeet <= store.geofence.radiusFeet ? "inside" : "inaccurate",
+        distanceFeet,
+        accuracyFeet,
+        checkedAt: valid ? new Date(position.timestamp).toISOString() : ""
       });
       render();
     },
     (error) => {
+      if (request !== geofenceRequest) return;
       setGeofenceStatus(store, {
-        status: error.code === error.PERMISSION_DENIED ? "denied" : "unavailable",
+        status: error.code === 1 ? "denied" : error.code === 3 ? "timeout" : "unavailable",
         distanceFeet: null
       });
       render();
     },
-    { enableHighAccuracy: true, maximumAge: 30000, timeout: 12000 }
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
   );
 }
 
 function formatVisitTime(value) {
-  if (!value) return "";
+  if (!value || !Number.isFinite(Date.parse(value))) return "Unknown";
   return new Intl.DateTimeFormat([], {
     hour: "numeric",
     minute: "2-digit"
@@ -966,17 +1045,26 @@ function visitTimestampLabel(store) {
 }
 
 function startVisit(store) {
+  const other = stores.find((candidate) => candidate.id !== store.id && visitRecord(candidate).status === "in-progress");
+  if (other) {
+    geofenceStatusText.textContent = `Finish the visit at ${other.name} first.`;
+    return false;
+  }
+  if (visitRecord(store).status === "in-progress") return false;
   if (!canPunchIn(store)) {
     setGeofenceStatus(store, { status: "blocked", distanceFeet: geofenceRecord(store).distanceFeet });
     render();
     return false;
   }
   const record = visitRecord(store);
-  visitTracking[store.id] = {
+  visitTracking[`${visitDay()}:${store.id}`] = {
+    storeId: store.id,
+    history: [...(record.history || []), ...(record.status === "complete" ? [{ startedAt: record.startedAt, finishedAt: record.finishedAt }] : [])],
     status: "in-progress",
     startedAt: record.status === "in-progress" && record.startedAt ? record.startedAt : new Date().toISOString(),
     finishedAt: ""
   };
+  delete geofenceChecks[store.id];
   saveVisitTracking();
   render();
   return true;
@@ -985,7 +1073,9 @@ function startVisit(store) {
 function finishVisit(store) {
   const record = visitRecord(store);
   if (record.status !== "in-progress") return;
-  visitTracking[store.id] = {
+  visitTracking[`${visitDay(new Date(record.startedAt))}:${store.id}`] = {
+    ...record,
+    storeId: store.id,
     status: "complete",
     startedAt: record.startedAt || new Date().toISOString(),
     finishedAt: new Date().toISOString()
@@ -1004,6 +1094,8 @@ function renderRouteSummary() {
 
 function setActiveStore(index) {
   stopCameraScan();
+  geofenceRequest++;
+  Object.keys(geofenceChecks).forEach((key) => delete geofenceChecks[key]);
   activeStoreIndex = Math.max(0, Math.min(stores.length - 1, index));
   activeScannedProductSku = "";
   if (orderSearchInput) orderSearchInput.value = "";
@@ -1011,6 +1103,7 @@ function setActiveStore(index) {
   if (scanInput) scanInput.value = "";
   orderBuilt = false;
   render();
+  renderScanResult(null);
 }
 
 function renderRouteSwitcher() {
@@ -1105,7 +1198,7 @@ function renderOrder(store) {
     return;
   }
   const orderedItems = orderedItemsByLocation(store.order).filter(({ item }) => {
-    return orderItemMatchesSearch(item, searchTerm) && orderItemMatchesScannedProduct(item, useScannedProductFilter ? activeScannedProductSku : "");
+    return !isRemovedItem(store, item) && orderItemMatchesSearch(item, searchTerm) && orderItemMatchesScannedProduct(item, useScannedProductFilter ? activeScannedProductSku : "");
   });
   const scanFilterBanner = scannedProduct
     ? `<div class="scan-filter-banner"><span>Scanned item: ${scannedProduct.name}</span><button id="clearScanFilterButton">Clear</button></div>`
@@ -1127,7 +1220,7 @@ function renderOrder(store) {
         currentGroup = group;
         const suggestedPoint = suggestedReorderPoint(item);
         const repPoint = activeReorderPoint(store, item);
-        const isCustomPoint = repPoint !== suggestedPoint;
+        const isCustomPoint = hasRepReorderPoint(store, item);
         const replenishmentGap = autoOrderGap(store, item);
         const demandSignal = learnedDemandSignal(item);
         const needsPointPermission = hasRepReorderPoint(store, item) && demandSignal && repPoint < suggestedPoint;
@@ -1219,7 +1312,7 @@ function renderOrder(store) {
     input.addEventListener("change", () => {
       const item = store.order[Number(input.dataset.index)];
       const field = input.dataset.editField;
-      const value = field === "warehouseQoh" && input.value.trim() === "" ? null : Math.max(0, Number(input.value) || 0);
+      const value = caseQuantity(input.value, field === "warehouseQoh" ? null : 0);
       saveOrderItemOverride(store, item, { [field]: value });
       if (field === "qoh") {
         applyAutoOrderFromPoint(store, item);
@@ -1234,7 +1327,7 @@ function renderOrder(store) {
     button.addEventListener("click", () => {
       const item = store.order[Number(button.dataset.dateOk)];
       dateCheckStatuses[dateCheckKey(store, item)] = "ok";
-      localStorage.setItem("dateCheckStatuses", JSON.stringify(dateCheckStatuses));
+      saveState("dateCheckStatuses", dateCheckStatuses);
       render();
     });
   });
@@ -1243,7 +1336,7 @@ function renderOrder(store) {
     button.addEventListener("click", () => {
       const item = store.order[Number(button.dataset.dateOod)];
       dateCheckStatuses[dateCheckKey(store, item)] = "ood";
-      localStorage.setItem("dateCheckStatuses", JSON.stringify(dateCheckStatuses));
+      saveState("dateCheckStatuses", dateCheckStatuses);
       store.returns = store.returns || [];
       store.returns.push({
         type: "OOD",
@@ -1251,6 +1344,7 @@ function renderOrder(store) {
         cases: Math.max(1, storeQoh(item)),
         note: `Date check triggered after ${item.noSalesDays} days with no recorded sales`
       });
+      saveReturns(store);
       setActiveView(".returns-panel");
       render();
     });
@@ -1274,7 +1368,7 @@ function renderOrder(store) {
   orderList.querySelectorAll("[data-rp-field]").forEach((input) => {
     input.addEventListener("change", () => {
       const item = store.order[Number(input.dataset.index)];
-      const value = Math.max(0, Number(input.value) || 0);
+      const value = caseQuantity(input.value);
       saveReorderPointOverride(store, item, value);
       applyAutoOrderFromPoint(store, item);
       item.approved = false;
@@ -1297,7 +1391,7 @@ function renderOrder(store) {
   orderList.querySelectorAll("[data-approve]").forEach((button) => {
     button.addEventListener("click", () => {
       const item = store.order[Number(button.dataset.approve)];
-      item.approved = !item.approved;
+      saveOrderItemOverride(store, item, { approved: !item.approved });
       orderBuilt = false;
       render();
     });
@@ -1335,7 +1429,7 @@ function renderDateCheckMarkup(store) {
 
 function renderStock(store) {
   const hasLiveOnHand = !store.confidence.startsWith("Low");
-  const riskItems = store.order.filter((item) => item.onHand <= 10).length;
+  const riskItems = store.order.filter((item) => storeQoh(item) <= 10).length;
   stockSignal.textContent = hasLiveOnHand ? `${riskItems} risk SKUs` : "Rep check required";
   stockTable.innerHTML = store.order
     .map((item, index) => {
@@ -1389,7 +1483,7 @@ function renderDisplays(store) {
     ? `
       <div class="promo-section-head">
         <strong>Promo order recommendations</strong>
-        <span>Rep reviews before order</span>
+        <span>Planning only / not added to order</span>
       </div>
       ${promos.map((promo, index) => renderPromoRecommendation(store, promo, index)).join("")}
     `
@@ -1429,8 +1523,8 @@ function renderDisplays(store) {
   displayList.querySelectorAll("[data-promo-order]").forEach((input) => {
     input.addEventListener("change", () => {
       const promo = promos[Number(input.dataset.promoOrder)];
-      promoOrderOverrides[promoOverrideKey(store, promo)] = Math.max(0, Number(input.value) || 0);
-      localStorage.setItem("promoOrderOverrides", JSON.stringify(promoOrderOverrides));
+      promoOrderOverrides[promoOverrideKey(store, promo)] = caseQuantity(input.value);
+      saveState("promoOrderOverrides", promoOrderOverrides);
       renderDisplays(store);
     });
   });
@@ -1441,7 +1535,7 @@ function renderDisplays(store) {
       const key = displayConfirmationKey(store, display);
       if (displayConfirmations[key]) delete displayConfirmations[key];
       else displayConfirmations[key] = true;
-      localStorage.setItem("displayConfirmations", JSON.stringify(displayConfirmations));
+      saveState("displayConfirmations", displayConfirmations);
       renderDisplays(store);
     });
   });
@@ -1486,19 +1580,42 @@ function renderReturns(store) {
   returnsList.innerHTML = returns.length
     ? returns
         .map(
-          (item) => `
+          (item, index) => `
             <article class="return-item ${riskClass(item.type)}">
-              <div>
-                <strong>${item.item}</strong>
-                <span>${item.note}</span>
-              </div>
-              <b>${item.cases} cs</b>
-              <em>${item.type}</em>
+              <label>Product<input aria-label="Return product ${index + 1}" data-return-field="item" data-return-index="${index}" value="${escapeHtml(item.item)}"></label>
+              <label>Cases<input aria-label="Return cases ${index + 1}" type="number" min="0" step="1" data-return-field="cases" data-return-index="${index}" value="${caseQuantity(item.cases)}"></label>
+              <label>Reason<select aria-label="Return reason ${index + 1}" data-return-field="type" data-return-index="${index}">${["OOD", "Breakage", "Sellable"].map((type) => `<option ${item.type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label>
+              <label>Note<input aria-label="Return note ${index + 1}" data-return-field="note" data-return-index="${index}" value="${escapeHtml(item.note)}"></label>
+              <button class="secondary-button compact-button" data-remove-return="${index}" aria-label="Remove return ${index + 1}">Remove</button>
             </article>
           `
         )
         .join("")
     : `<div class="empty-state">No returns logged for this stop.</div>`;
+  returnsList.querySelectorAll("[data-return-field]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const field = input.dataset.returnField;
+      returns[Number(input.dataset.returnIndex)][field] = field === "cases" ? caseQuantity(input.value) : input.value.trim();
+      saveReturns(store);
+      render();
+    });
+  });
+  returnsList.querySelectorAll("[data-remove-return]").forEach((button) => {
+    button.addEventListener("click", () => {
+      returns.splice(Number(button.dataset.removeReturn), 1);
+      saveReturns(store);
+      render();
+    });
+  });
+}
+
+function saveReturns(store) {
+  returnsOverrides[store.id] = store.returns;
+  saveState("returnsOverrides", returnsOverrides);
+}
+
+function escapeHtml(value = "") {
+  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
 
 function productInitials(product) {
@@ -1560,6 +1677,8 @@ function searchProducts(products, query) {
     .filter(({ product }) => productExactMatch(product, fullTerm, scanTerm))
     .map((result) => ({ ...result, score: 1000 }));
   if (exactMatches.length) return exactMatches;
+  // A numeric scanner value must never fall through to fuzzy product-name matching.
+  if (/^\d+$/.test(String(query).trim())) return [];
 
   if (fullTerm.length < 3 && !packageTokens(fullTerm).length) return [];
   return products
@@ -1621,6 +1740,11 @@ function packageTokens(term) {
   return term.split(/\s+/).filter((token) => /^\d+(\.\d+)?(pk|oz|l)$/.test(token));
 }
 
+function packageMatches(text, tokens) {
+  const available = new Set(packageTokens(text));
+  return tokens.every((token) => available.has(token));
+}
+
 function productSearchScore(product, term) {
   const searchDoc = productSearchDocument(product);
   const haystack = searchDoc.allText;
@@ -1630,7 +1754,7 @@ function productSearchScore(product, term) {
   const tokens = term.split(/\s+/).filter(Boolean);
   const packageTerms = packageTokens(term);
   const nonPackageTerms = tokens.filter((token) => !packageTerms.includes(token));
-  if (packageTerms.length && !packageTerms.every((token) => packageText.includes(token))) return 0;
+  if (packageTerms.length && !packageMatches(packageText, packageTerms)) return 0;
   if (packageTerms.length && nonPackageTerms.length && !nonPackageTerms.every((token) => tokenMatchesSearchDoc(token, searchDoc))) return 0;
   if (!packageTerms.length && tokens.length > 1 && !tokens.every((token) => tokenMatchesSearchDoc(token, searchDoc))) return 0;
 
@@ -1748,8 +1872,8 @@ function productMatchesStoreItem(product, storeItem) {
   const productPackageText = normalizeSearchText(product.package);
   const productText = normalizeSearchText([product.name, product.brand, product.package, product.category].filter(Boolean).join(" "));
   const storeText = normalizeSearchText(storeItem.sku);
-  if (storePackageTokens.length && !storePackageTokens.every((token) => productPackageText.includes(token))) return false;
-  if (storePackageTokens.length && !storePackageTokens.every((token) => productText.includes(token))) return false;
+  if (storePackageTokens.length && !packageMatches(productPackageText, storePackageTokens)) return false;
+  if (storePackageTokens.length && !packageMatches(productText, storePackageTokens)) return false;
   const storeTokens = storeText.split(/\s+/).filter((token) => !storePackageTokens.includes(token));
   const importantTokens = storeTokens.filter((token) => token !== brand);
   if (importantTokens.length && !importantTokens.every((token) => productText.includes(token))) return false;
@@ -1770,36 +1894,36 @@ function storeAuthorizedCatalog(store) {
     const product = productCatalog.find((candidate) => candidate.sku === sku);
     if (product) productMap.set(product.sku, product);
   });
-  (storeCatalogOverrides[store.id] || []).forEach((sku) => {
+  (Array.isArray(storeCatalogOverrides[store.id]) ? storeCatalogOverrides[store.id] : []).forEach((sku) => {
     const product = productCatalog.find((candidate) => candidate.sku === sku);
     if (product) productMap.set(product.sku, product);
   });
-  return [...productMap.values()].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+  const removed = Array.isArray(catalogRemovals[store.id]) ? catalogRemovals[store.id] : [];
+  return [...productMap.values()].filter((product) => !removed.includes(product.sku))
+    .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
 }
 
 function saveStoreCatalogOverride(store, skus) {
   storeCatalogOverrides[store.id] = [...new Set(skus)];
-  localStorage.setItem("storeCatalogOverrides", JSON.stringify(storeCatalogOverrides));
+  saveState("storeCatalogOverrides", storeCatalogOverrides);
 }
 
 function addProductToStoreCatalog(store, sku) {
-  if (!sku) return;
-  const current = storeCatalogOverrides[store.id] || [];
+  if (!productCatalog.some((product) => product.sku === sku)) return;
+  catalogRemovals[store.id] = (Array.isArray(catalogRemovals[store.id]) ? catalogRemovals[store.id] : []).filter((value) => value !== sku);
+  saveState("catalogRemovals", catalogRemovals);
+  const current = Array.isArray(storeCatalogOverrides[store.id]) ? storeCatalogOverrides[store.id] : [];
   saveStoreCatalogOverride(store, [...current, sku]);
 }
 
 function removeProductFromStoreCatalog(store, sku) {
-  const currentOverride = storeCatalogOverrides[store.id] || [];
-  if (currentOverride.includes(sku)) {
-    saveStoreCatalogOverride(
-      store,
-      currentOverride.filter((itemSku) => itemSku !== sku)
-    );
-    return;
-  }
-
-  store.authorizedSkus = (store.authorizedSkus || []).filter((itemSku) => itemSku !== sku);
-  store.order = store.order.filter((item) => productByStoreItem(item)?.sku !== sku);
+  const current = Array.isArray(catalogRemovals[store.id]) ? catalogRemovals[store.id] : [];
+  catalogRemovals[store.id] = [...new Set([...current, sku])];
+  saveState("catalogRemovals", catalogRemovals);
+  saveStoreCatalogOverride(store, (Array.isArray(storeCatalogOverrides[store.id]) ? storeCatalogOverrides[store.id] : []).filter((value) => value !== sku));
+  store.order.filter((item) => productByStoreItem(item)?.sku === sku).forEach((item) => {
+    saveOrderItemOverride(store, item, { base: 0 });
+  });
 }
 
 function renderScanResult(product, query = "") {
@@ -1923,7 +2047,7 @@ function handleBarcode(rawValue, source = "manual") {
     renderScanResult(null);
     return false;
   }
-  scanInput.value = code;
+  if (source !== "manual" || /^\d{8,13}$/.test(String(rawValue).trim())) scanInput.value = code;
   renderScanResult(findProduct(code), code);
   if (source !== "manual" && navigator.vibrate) navigator.vibrate(60);
   return true;
@@ -1970,6 +2094,7 @@ function handleDecodedBarcode(rawValue, decoder = "unknown", format = "") {
 }
 
 function stopCameraScan(message = "") {
+  cameraSession++;
   if (cameraScanLoop) {
     cancelAnimationFrame(cameraScanLoop);
     cameraScanLoop = 0;
@@ -1990,6 +2115,7 @@ function stopCameraScan(message = "") {
   }
 
   if (cameraVideo) {
+    if (cameraVideo.srcObject?.getTracks) cameraVideo.srcObject.getTracks().forEach((track) => track.stop());
     if (typeof cameraVideo.pause === "function") cameraVideo.pause();
     cameraVideo.srcObject = null;
   }
@@ -2019,22 +2145,25 @@ function barcodeFormats(DetectorClass = window.BarcodeDetector) {
 function loadZbarBarcodeDetector() {
   if (zbarLoadPromise) return zbarLoadPromise;
   zbarLoadPromise = import("https://cdn.jsdelivr.net/npm/@undecaf/barcode-detector-polyfill@0.9.23/dist/main.js")
-    .then((module) => module.BarcodeDetectorPolyfill);
+    .then((module) => module.BarcodeDetectorPolyfill)
+    .catch((error) => { zbarLoadPromise = null; throw error; });
   return zbarLoadPromise;
 }
 
-async function startZbarWasmScan() {
+async function startZbarWasmScan(session) {
   if (!window.navigator?.mediaDevices?.getUserMedia) throw new Error("Camera access is not available.");
 
   const DetectorClass = await loadZbarBarcodeDetector();
+  if (session !== cameraSession) return;
   if (!DetectorClass) throw new Error("ZBar WASM decoder unavailable.");
   const formats = await barcodeFormats(DetectorClass);
+  if (session !== cameraSession) return;
   logScannerDebug({ decoder: "ZBar WASM", supportedBarcodeFormats: formats });
   if (!formats.length) throw new Error("Unsupported barcode format.");
 
   cameraEngine = "ZBar WASM";
   cameraDetector = new DetectorClass({ formats });
-  cameraStream = await window.navigator.mediaDevices.getUserMedia({
+  const stream = await window.navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: { ideal: "environment" },
       width: { ideal: 1280 },
@@ -2043,30 +2172,36 @@ async function startZbarWasmScan() {
     },
     audio: false
   });
+  if (session !== cameraSession) {
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  cameraStream = stream;
 
   cameraVideo.srcObject = cameraStream;
   cameraVideo.setAttribute("autoplay", "true");
   cameraVideo.setAttribute("muted", "true");
   cameraVideo.setAttribute("playsinline", "true");
   await cameraVideo.play();
+  if (session !== cameraSession) return;
   setCameraStatus("Decoder: ZBar WASM. Camera ready. Center barcode in box.");
 
   const scanFrame = async () => {
-    if (cameraDecodedValue || !cameraDetector || !cameraVideo?.srcObject) return;
+    if (session !== cameraSession || cameraDecodedValue || !cameraDetector || !cameraVideo?.srcObject) return;
     try {
       const matches = await cameraDetector.detect(cameraVideo);
+      if (session !== cameraSession) return;
       const supportedMatch = matches?.find((match) => formats.includes(match.format));
       if (supportedMatch?.rawValue) {
-        handleDecodedBarcode(supportedMatch.rawValue, "ZBar WASM", supportedMatch.format);
-        return;
+        if (handleDecodedBarcode(supportedMatch.rawValue, "ZBar WASM", supportedMatch.format)) return;
       }
       setCameraStatus("Decoder: ZBar WASM. Scanning barcode...");
     } catch (error) {
+      if (session !== cameraSession) return;
       setCameraStatus("Barcode not detected");
       logScannerDebug({ decoder: "ZBar WASM", error: error?.message || String(error) });
-      return;
     }
-    cameraScanLoop = requestAnimationFrame(scanFrame);
+    if (session === cameraSession) cameraScanLoop = requestAnimationFrame(scanFrame);
   };
 
   cameraScanLoop = requestAnimationFrame(scanFrame);
@@ -2077,7 +2212,7 @@ function loadZxingBrowser() {
   zxingLoadPromise = import("https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/+esm").then((module) => {
     zxingModule = module;
     return module;
-  });
+  }).catch((error) => { zxingLoadPromise = null; throw error; });
   return zxingLoadPromise;
 }
 
@@ -2085,9 +2220,10 @@ function decodedTextFromResult(result) {
   return result?.getText ? result.getText() : result?.text || "";
 }
 
-async function startZxingScan() {
+async function startZxingScan(session) {
   if (!window.navigator?.mediaDevices?.getUserMedia) throw new Error("Camera access is not available.");
   const zxing = await loadZxingBrowser();
+  if (session !== cameraSession) return;
   const Reader = zxing?.BrowserMultiFormatOneDReader || zxing?.BrowserMultiFormatReader;
   if (!Reader) throw new Error("ZXing browser scanner did not load.");
   cameraEngine = "ZXing";
@@ -2102,11 +2238,12 @@ async function startZxingScan() {
   });
 
   setCameraStatus("Decoder: ZXing. Camera ready. Center barcode in box.");
-  zxingControls = await zxingReader.decodeFromVideoDevice(undefined, cameraVideo, (result, error) => {
-    if (cameraDecodedValue) return;
+  const controls = await zxingReader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } }, audio: false }, cameraVideo, (result, error) => {
+    if (session !== cameraSession || cameraDecodedValue) return;
     const rawValue = decodedTextFromResult(result);
     if (rawValue) {
-      const format = result?.getBarcodeFormat ? String(result.getBarcodeFormat()).toLowerCase() : "";
+      const formatCode = result?.getBarcodeFormat?.();
+      const format = ({ 6: "ean_8", 7: "ean_13", 14: "upc_a", 15: "upc_e" })[formatCode] || "";
       handleDecodedBarcode(rawValue, "ZXing", format);
       return;
     }
@@ -2114,6 +2251,11 @@ async function startZxingScan() {
       setCameraStatus("Decoder: ZXing. Scanning barcode...");
     }
   });
+  if (session !== cameraSession) {
+    controls?.stop?.();
+    return;
+  }
+  zxingControls = controls;
 }
 
 async function startCameraScan() {
@@ -2126,26 +2268,42 @@ async function startCameraScan() {
   }
 
   stopCameraScan();
+  const session = cameraSession;
   cameraDecodedValue = "";
   setCameraActive(true);
   setCameraStatus(`Camera starting. ${cameraDiagnosticsText(diag)}`);
 
   try {
-    await startZbarWasmScan();
+    await startZbarWasmScan(session);
   } catch (zbarError) {
+    if (session !== cameraSession) return;
+    if (["NotAllowedError", "NotFoundError", "NotReadableError"].includes(zbarError?.name)) {
+      stopCameraScan(zbarError.name === "NotAllowedError" ? "Camera permission denied" : "Camera unavailable");
+      return;
+    }
+    let fallbackSession;
     try {
       stopCameraScan();
+      fallbackSession = cameraSession;
       cameraDecodedValue = "";
       setCameraActive(true);
       setCameraStatus("ZBar WASM unavailable. Loading ZXing fallback...");
       logScannerDebug({ decoder: "ZBar WASM", failure: zbarError?.message || String(zbarError) });
-      await startZxingScan();
+      await startZxingScan(fallbackSession);
     } catch (zxingError) {
+      if (fallbackSession !== cameraSession) return;
       logScannerDebug({ decoder: "ZXing", failure: zxingError?.message || String(zxingError) });
-      stopCameraScan("Decoder unavailable. Type the UPC or use Zebra/DataWedge input.");
+      stopCameraScan(zxingError?.name === "NotAllowedError" ? "Camera permission denied"
+        : ["NotFoundError", "NotReadableError"].includes(zxingError?.name) ? "Camera unavailable"
+          : "Decoder unavailable. Type the UPC or use Zebra/DataWedge input.");
     }
   }
 }
+
+window.addEventListener?.("pagehide", () => stopCameraScan());
+document.addEventListener?.("visibilitychange", () => {
+  if (document.hidden) stopCameraScan();
+});
 
 function renderCatalog() {
   if (catalogCount) catalogCount.textContent = `${productCatalog.length} SKUs`;
@@ -2199,6 +2357,7 @@ function renderStoreCatalog(store) {
   storeCatalogList.querySelectorAll("[data-catalog-sku]").forEach((button) => {
     button.addEventListener("click", () => {
       handleBarcode(button.dataset.catalogSku, "catalog");
+      setActiveView(".scanner-panel");
     });
   });
 
@@ -2249,12 +2408,13 @@ function renderWeather(store) {
 }
 
 function renderReview(store) {
-  const totalQoh = store.order.reduce((sum, item) => sum + storeQoh(item), 0);
-  const totalOrderPoints = store.order.reduce((sum, item) => sum + activeReorderPoint(store, item), 0);
+  const activeOrder = store.order.filter((item) => !isRemovedItem(store, item));
+  const totalQoh = activeOrder.reduce((sum, item) => sum + storeQoh(item), 0);
+  const totalOrderPoints = activeOrder.reduce((sum, item) => sum + activeReorderPoint(store, item), 0);
   const autoOrder = orderTotal(store);
-  const learnedItems = store.order.filter((item) => learnedDemandLift(item) > 0).length;
-  const approved = store.order.filter((item) => item.approved).length;
-  approvalStatus.textContent = orderBuilt ? "Submitted" : `${approved}/${store.order.length} approved`;
+  const learnedItems = activeOrder.filter((item) => learnedDemandLift(item) > 0).length;
+  const approved = activeOrder.filter((item) => item.approved).length;
+  approvalStatus.textContent = reviewSnapshots[store.id] === orderSignature(store) ? "Demo saved" : `${approved}/${activeOrder.length} approved`;
   reviewMath.innerHTML = `
     <div><span>Account</span><strong>${store.account}</strong></div>
     <div><span>Workflow</span><strong>QOH to store order point</strong></div>
@@ -2264,6 +2424,10 @@ function renderReview(store) {
     <div><span>Learned lifts</span><strong>${learnedItems} SKUs</strong></div>
     <div class="review-total"><span>Auto-built order</span><strong>${autoOrder} cases</strong></div>
   `;
+}
+
+function orderSignature(store) {
+  return JSON.stringify(store.order.map((item) => [item.sku, finalCases(item), storeQoh(item), warehouseQoh(item), activeReorderPoint(store, item), item.approved, isRemovedItem(store, item)]));
 }
 
 function render() {
@@ -2282,16 +2446,17 @@ function render() {
   renderReview(store);
 }
 
-function setActiveView(target) {
+function setActiveView(target, scroll = true) {
   if (target !== ".scanner-panel") stopCameraScan();
   activeViewTarget = target;
   document.body.dataset.activeView = viewMap[target] || "route-view";
   const activeView = viewMap[target] || "route-view";
+  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.target === target));
   document.querySelectorAll(".app-view").forEach((section) => {
     section.classList.toggle("view-visible", section.classList.contains(activeView));
   });
   renderOrder(stores[activeStoreIndex]);
-  document.querySelector(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll) document.querySelector(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 loadOrderItemOverrides();
@@ -2301,7 +2466,7 @@ renderCatalog();
 
 document.querySelector("#approveAllButton").addEventListener("click", () => {
   stores[activeStoreIndex].order.forEach((item) => {
-    item.approved = true;
+    saveOrderItemOverride(stores[activeStoreIndex], item, { approved: true });
   });
   orderBuilt = false;
   render();
@@ -2314,13 +2479,15 @@ if (orderSearchInput) {
 }
 
 document.querySelector("#editButton").addEventListener("click", () => {
-  document.querySelector(".order-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  setActiveView(".order-panel");
 });
 
 document.querySelector("#sendButton").addEventListener("click", () => {
   stores[activeStoreIndex].order.forEach((item) => {
-    item.approved = true;
+    saveOrderItemOverride(stores[activeStoreIndex], item, { approved: true });
   });
+  reviewSnapshots[stores[activeStoreIndex].id] = orderSignature(stores[activeStoreIndex]);
+  saveState("reviewSnapshots", reviewSnapshots);
   orderBuilt = true;
   render();
 });
@@ -2331,10 +2498,11 @@ document.querySelectorAll("[data-return-type]").forEach((button) => {
     store.returns = store.returns || [];
     store.returns.push({
       type: button.dataset.returnType,
-      item: "New scanned item",
+      item: productCatalog.find((product) => product.sku === activeScannedProductSku)?.name || "New return",
       cases: 1,
-      note: "Tap item after Zebra scan to edit"
+      note: ""
     });
+    saveReturns(store);
     orderBuilt = false;
     render();
   });
@@ -2418,15 +2586,18 @@ if (finishVisitButton) {
 }
 
 document.querySelector("#resetButton").addEventListener("click", () => {
+  geofenceRequest++;
   stores.forEach((store) => {
     store.order.forEach((item) => {
-      item.approved = false;
+      saveOrderItemOverride(store, item, { approved: false });
     });
   });
   Object.keys(visitTracking).forEach((key) => delete visitTracking[key]);
   saveVisitTracking();
   Object.keys(geofenceChecks).forEach((key) => delete geofenceChecks[key]);
   saveGeofenceChecks();
+  Object.keys(reviewSnapshots).forEach((key) => delete reviewSnapshots[key]);
+  saveState("reviewSnapshots", reviewSnapshots);
   setActiveStore(0);
 });
 
@@ -2445,4 +2616,4 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 });
 
 render();
-setActiveView(".order-panel");
+setActiveView(".order-panel", false);

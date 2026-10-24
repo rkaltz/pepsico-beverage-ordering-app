@@ -176,8 +176,42 @@ h2 {
 main {
   display: grid;
   gap: 14px;
-  padding: 16px 12px 92px;
+  padding: 40px 12px 92px;
 }
+
+.demo-notice {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.demo-notice[hidden] { display: none; }
+
+.return-item label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.return-item input,
+.return-item select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  background: white;
+  color: var(--ink);
+}
+
+.returns-list .return-item { grid-template-columns: minmax(0, 1fr) 80px; }
+.return-item label:first-child,
+.return-item label:nth-child(4) { grid-column: 1 / -1; }
 
 .route-switcher {
   position: sticky;

@@ -38,7 +38,7 @@ function createElement(selector = "") {
   };
 }
 
-function loadPrototype() {
+function loadPrototype(savedState = {}, navigatorOverrides = {}) {
   const elements = new Map();
   const bodyClasses = new Set();
   const document = {
@@ -70,11 +70,12 @@ function loadPrototype() {
       return [];
     }
   };
-  const localStorageData = {};
+  const localStorageData = { ...savedState };
   const context = {
     console,
     navigator: {
-      vibrate() {}
+      vibrate() {},
+      ...navigatorOverrides
     },
     URL,
     URLSearchParams,
@@ -112,6 +113,7 @@ function loadPrototype() {
     .replace("let activeScannedProductSku =", "var activeScannedProductSku =")
     .replace("let activeViewTarget =", "var activeViewTarget =");
   vm.runInContext(appCode, context);
+  context.savedState = localStorageData;
   return context;
 }
 
@@ -159,7 +161,8 @@ function testSearch(context) {
     ["mountain dew 12pk", "Mountain Dew 12pk 12oz Cans"],
     ["01201303", "Pepsi 12oz Can"],
     ["012000000133", "Pepsi 12oz Can"],
-    ["012000002946", "Pepsi 20oz Bottle"]
+    ["012000001291", "Pepsi 20oz Bottle"],
+    ["012000002946", "Pepsi 1 Liter Bottle"]
   ];
   specificCases.forEach(([query, expected]) => {
     assert(context.findProduct(query)?.name === expected, `Find "${query}" expected ${expected}`);
@@ -211,6 +214,7 @@ function testOrderingMath(context) {
   assert(context.warehouseStatus({ warehouseQoh: 4, base: 8 }).level === "short", "Warehouse shortage warning did not trigger");
   assert(context.warehouseStatus({ warehouseQoh: 0, base: 1 }).level === "out", "Warehouse OOS warning did not trigger");
   assert(context.warehouseStatus({ base: 1 }).level === "unknown", "Missing warehouse data should be unknown");
+  assert(context.learnedDemandLift({ stockoutWeeks: 3, onHand: 0, sold: 60 }) > 0, "Repeated stockout learning must still work when QOH reaches zero");
   delete context.reorderPointOverrides[walmartKey];
   delete context.reorderPointOverrides[krogerKey];
 }
@@ -240,20 +244,27 @@ function testDecodedBarcodePipeline(context) {
   const walmart = context.stores[0];
   context.setActiveStore(0);
 
-  assert(context.barcodeCheckDigitIsValid("012000002946"), "Physical Pepsi UPC should pass check-digit validation");
-  assert(context.barcodeCheckDigitIsValid("0012000002946"), "EAN-13 representation of Pepsi UPC should pass check-digit validation");
-  assert(context.normalizeDecodedBarcode("012000002946", "upc_a") === "012000002946", "UPC-A should remain the 12-digit UPC");
-  assert(context.normalizeDecodedBarcode("0012000002946", "ean_13") === "012000002946", "EAN-13 leading-zero UPC-A should normalize to 12 digits");
+  assert(context.barcodeCheckDigitIsValid("012000001291"), "Pepsi 20oz UPC should pass check-digit validation");
+  assert(context.barcodeCheckDigitIsValid("0012000001291"), "EAN-13 representation of Pepsi UPC should pass check-digit validation");
+  assert(context.normalizeDecodedBarcode("012000001291", "upc_a") === "012000001291", "UPC-A should remain the 12-digit UPC");
+  assert(context.normalizeDecodedBarcode("0012000001291", "ean_13") === "012000001291", "EAN-13 leading-zero UPC-A should normalize to 12 digits");
 
-  const handled = context.handleBarcode("0012000002946", "camera");
+  const handled = context.handleBarcode("0012000001291", "camera");
   const scannedProduct = context.findProduct(context.scanInput.value);
   const orderLine = walmart.order.find((item) => item.sku === "Pepsi 20oz");
 
   assert(handled, "handleBarcode should accept normalized camera UPC");
-  assert(context.scanInput.value === "012000002946", "handleBarcode should write normalized UPC into scan input");
+  assert(context.scanInput.value === "012000001291", "handleBarcode should write normalized UPC into scan input");
   assert(scannedProduct?.name === "Pepsi 20oz Bottle", "Decoded Pepsi UPC should resolve to Pepsi 20oz Bottle");
   assert(context.activeScannedProductSku === "PEP-PEPSI-20OZ", "Decoded Pepsi UPC should set active scanned product");
   assert(context.orderItemMatchesScannedProduct(orderLine, scannedProduct.sku), "Decoded Pepsi UPC should match Walmart Pepsi 20oz order line");
+  const liter = context.findProduct("012000002946");
+  assert(liter?.name === "Pepsi 1 Liter Bottle", "1L UPC must not be mislabeled 20oz");
+  assert(!context.orderItemMatchesScannedProduct(orderLine, liter.sku), "1L UPC must not alter a 20oz order line");
+
+  context.scanInput.value = "pepsi ";
+  context.handleBarcode(context.scanInput.value, "manual");
+  assert(context.scanInput.value === "pepsi ", "Manual typing must preserve trailing spaces between search words");
 
   context.scanInput.value = "";
   context.activeScannedProductSku = "";
@@ -298,6 +309,7 @@ function testStoreSwitchClearsFilters(context) {
   assert(context.orderSearchInput.value === "", "Store switch should clear order search");
   assert(context.catalogSearchInput.value === "", "Store switch should clear catalog search");
   assert(context.scanInput.value === "", "Store switch should clear scan input");
+  assert(!context.orderItemMatchesSearch(context.stores[0].order[0], "2 oz"), "Package search must use exact sizes");
 }
 
 function testVisitTracking(context) {
@@ -305,23 +317,90 @@ function testVisitTracking(context) {
   const kroger = context.stores[1];
   assert(context.startVisit(walmart) === false, "Start Visit should be blocked before geofence approval");
   assert(context.geofenceRecord(walmart).status === "blocked", "Blocked punch-in should update geofence status");
+  walmart.geofence.verified = true;
+  kroger.geofence.verified = true;
   context.geofenceChecks[walmart.id] = {
     status: "inside",
     checkedAt: new Date().toISOString(),
-    distanceFeet: 42
+    distanceFeet: 42,
+    accuracyFeet: 10
   };
   context.startVisit(walmart);
   assert(context.visitRecord(walmart).status === "in-progress", "Start Visit should mark selected store in progress");
   assert(context.visitRecord(kroger).status === "not-started", "Start Visit should not leak into next store");
+  context.geofenceChecks[kroger.id] = { status: "inside", checkedAt: new Date().toISOString(), distanceFeet: 0, accuracyFeet: 10 };
+  assert(context.startVisit(kroger) === false, "Cannot punch into two stores at once");
   context.finishVisit(walmart);
   assert(context.visitRecord(walmart).status === "complete", "Finish Visit should mark selected store complete");
   assert(Boolean(context.visitRecord(walmart).startedAt), "Visit should keep a start timestamp");
   assert(Boolean(context.visitRecord(walmart).finishedAt), "Visit should keep a finish timestamp");
   assert(context.visitStatusLabel(walmart) === "Complete", "Complete visit label should render correctly");
   assert(context.visitStatusLabel(kroger) === "Not started", "Unstarted visit label should render correctly");
+  assert(context.startVisit(walmart) === false, "Restart requires a new location check");
+  context.geofenceChecks[walmart.id] = { status: "inside", checkedAt: new Date().toISOString(), distanceFeet: 0, accuracyFeet: 10 };
   context.startVisit(walmart);
   assert(context.visitRecord(walmart).status === "in-progress", "Restart Visit should put the store back in progress");
   assert(context.visitRecord(walmart).finishedAt === "", "Restart Visit should clear the previous finish timestamp");
+}
+
+function testGeofence() {
+  let success;
+  let failure;
+  const context = loadPrototype({}, { geolocation: { getCurrentPosition(ok, error) { success = ok; failure = error; } } });
+  const store = context.stores[0];
+  context.checkStoreGeofence(store);
+  assert(context.geofenceRecord(store).status === "unavailable", "Unverified store location must fail closed");
+  store.geofence.verified = true;
+  const position = (accuracy = 5) => ({ coords: { latitude: store.geofence.lat, longitude: store.geofence.lng, accuracy }, timestamp: Date.now() });
+  context.checkStoreGeofence(store);
+  success(position());
+  assert(context.canPunchIn(store), "Fresh accurate in-store fix must allow punch-in");
+  context.geofenceChecks[store.id].checkedAt = "2020-01-01T00:00:00Z";
+  assert(!context.canPunchIn(store), "Stale fix must not allow punch-in");
+  context.checkStoreGeofence(store);
+  success(position(1000));
+  assert(!context.canPunchIn(store), "Imprecise GPS must not allow punch-in");
+  context.checkStoreGeofence(store);
+  failure({ code: 1 });
+  assert(context.geofenceRecord(store).status === "denied", "Permission-denied state must be explicit");
+  context.checkStoreGeofence(store);
+  failure({ code: 3 });
+  assert(context.geofenceRecord(store).status === "timeout", "Timeout state must be explicit");
+  context.checkStoreGeofence(store);
+  const pending = success;
+  context.setActiveStore(1);
+  pending(position());
+  assert(!context.canPunchIn(store), "Late GPS callback after store switch must be ignored");
+  assert(context.distanceFeetBetween({ lat: 0, lng: 0 }, { lat: 0, lng: 0 }) === 0, "Zero distance must be exact");
+}
+
+function testPersistenceAndBadData() {
+  const context = loadPrototype();
+  const store = context.stores[0];
+  context.saveReorderPointOverride(store, store.order[0], 57);
+  context.saveOrderItemOverride(store, store.order[0], { base: 46, qoh: 11 });
+  context.removeProductFromStoreCatalog(store, "PEP-PEPSI-12PK-12OZ");
+  store.returns.push({ item: "Pepsi 20oz", type: "OOD", cases: 2, note: "QA return" });
+  context.saveReturns(store);
+  const reloaded = loadPrototype(context.savedState);
+  const restored = reloaded.stores[0];
+  assert(reloaded.activeReorderPoint(restored, restored.order[0]) === 57, "Rep order point must survive reload");
+  assert(restored.order[0].base === 46, "Manual quantity must survive reload");
+  assert(restored.order[0].normalBase === store.order[0].normalBase, "Normal baseline must not change on reload");
+  assert(!reloaded.storeAuthorizedCatalog(restored).some(x => x.sku === "PEP-PEPSI-12PK-12OZ"), "Baseline catalog removal must survive reload");
+  assert(restored.returns.some(x => x.note === "QA return"), "Returns must survive reload");
+  assert(!reloaded.stores[1].returns.some(x => x.note === "QA return"), "Returns must stay store-specific");
+  reloaded.addProductToStoreCatalog(restored, "PEP-PEPSI-12PK-12OZ");
+  assert(reloaded.storeAuthorizedCatalog(restored).some(x => x.sku === "PEP-PEPSI-12PK-12OZ"), "Removed product must be re-addable");
+  const corrupt = loadPrototype({ reorderPointOverrides: "{broken", storeCatalogOverrides: "null", orderItemOverrides: "[]" });
+  assert(corrupt.orderTotal(corrupt.stores[0]) > 0, "Corrupt saved data must not crash or blank the app");
+  assert(context.warehouseQoh({ warehouseQoh: NaN }) === null, "NaN warehouse QOH must stay unknown");
+  assert(context.caseQuantity(Infinity) === 0 && context.caseQuantity(2.8) === 2, "Quantities must be finite whole cases");
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  const key = `${context.visitDay(yesterday)}:${store.id}`;
+  const visits = { [key]: { storeId: store.id, status: "complete", startedAt: yesterday.toISOString(), finishedAt: yesterday.toISOString() } };
+  const newDay = loadPrototype({ visitTracking: JSON.stringify(visits) });
+  assert(newDay.visitRecord(newDay.stores[0]).status === "not-started", "Yesterday's completed visit must not complete today's stop");
 }
 
 function run() {
@@ -335,7 +414,10 @@ function run() {
   testCatalogIsolation(context);
   testStoreSwitchClearsFilters(context);
   testVisitTracking(context);
+  testGeofence();
+  testPersistenceAndBadData();
   console.log("QA regression baseline passed");
 }
 
-run();
+if (require.main === module) run();
+module.exports = { loadPrototype, run };
